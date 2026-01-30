@@ -13,7 +13,7 @@ from utils.edge_features import edge_features
 from utils.structures import SuperPoint
 
 
-def preprocess_cloud_to_edges(cloud_path, output_path, use_mp=True, verbose=False, n_jobs=-1):
+def preprocess_cloud_to_edges(cloud_path, output_path, radius: float = 1.5, use_mp=True, verbose=False, n_jobs=-1):
     """
     Process a single point cloud file and save edge features + labels.
     
@@ -66,9 +66,9 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp=True, verbose=Fals
     # Build edges
     centroids = np.array([sp.centroid for sp in superpoints])
     if use_mp and n_sp > 1000:
-        edges = build_edges_mp(centroids, n_jobs=n_jobs)
+        edges = build_edges_mp(centroids, radius=radius, n_jobs=n_jobs)
     else:
-        edges = build_edges(centroids)
+        edges = build_edges(centroids, radius=radius)
     
     if not edges:
         np.save(output_path, np.empty((0, 5), dtype=np.float32))
@@ -93,7 +93,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp=True, verbose=Fals
         print(f"Saved {n_edges} edges to {output_path}")
 
 
-def preprocess_dataset(input_dir, output_dir, use_mp=True, verbose=True, n_jobs=-1):
+def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, verbose=True, n_jobs=-1):
     """
     Preprocess all .npy files in input_dir and save edge features to output_dir.
     """
@@ -111,7 +111,7 @@ def preprocess_dataset(input_dir, output_dir, use_mp=True, verbose=True, n_jobs=
         out_file = output_path / relative_path
         out_file.parent.mkdir(parents=True, exist_ok=True)
         
-        preprocess_cloud_to_edges(npy_file, out_file, use_mp=use_mp, verbose=False)
+        preprocess_cloud_to_edges(npy_file, out_file, radius=radius, use_mp=use_mp, verbose=False)
 
 
 def main():
@@ -121,6 +121,7 @@ def main():
         preprocess_dataset(
             input_dir=f'data/split/{split}',
             output_dir=f'data/edges/{split}',
+            radius=1.5,
             use_mp=True,
             verbose=True,
             n_jobs=-1

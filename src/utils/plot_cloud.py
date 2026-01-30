@@ -1,6 +1,8 @@
+import pyvista as pv
+import numpy as np
 
 def plot_cloud(points: np.ndarray):
-    
+
         cloud = pv.PolyData(points)
 
         # Konfiguracja renderowania w przeglądarce

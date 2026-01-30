@@ -2,19 +2,13 @@
     "train_repeat": 4,
     "train_repeat_comment": "How many times training is done for the same config, to get average/ best results",
 
-    "data_path_train": "/home/michal-siniarski/Dokumenty/Z32/LAS/SEGM_DATA/BRIK/distributed/train.h5",
-    "data_path_test": "/home/michal-siniarski/Dokumenty/Z32/LAS/SEGM_DATA/BRIK/distributed/test.h5",
-    "data_path_val": "/home/michal-siniarski/Dokumenty/Z32/LAS/SEGM_DATA/BRIK/distributed/validation.h5",
-    
-    "num_classes": 10,
-    "batch_size": [6, 8, 2],
-    "num_points": [8192, 8192, 8192],
-    "num_neighbors": [16, 16, 16],
+    "data_path_train": "",
+    "data_path_test": "",
+    "data_path_val": "",
 
-
-
+    "batch_size": [2048, 4096, 512],
+    "radius": [0.5, 2.0, 0.5],
     "epochs": [75, 150, 25],
-    "focal_loss_gamma": [1.0, 2.0, 0.5],
 
 
     "general_convention_comment": "start, stop, step",
@@ -25,11 +19,11 @@
 
 
     "scheduler_params_comment": [],
-    "pc_start": [0.1, 0.3, 0.1],
-    "pc_start_comment": "start, stop, step",
-    "div_factor": [10, 100, 10],
+    "pct_start": [0.1, 0.3, 0.1],
+    "pct_start_comment": "start, stop, step",
+    "div_factor": [100.0, 10.0, 0.1],
     "div_factor_comment": "low, high, factor",
-    "final_div_factor": [100, 10000, 10],
+    "final_div_factor": [10000.0, 100.0, 0.1],
     "final_div_factor_comment": "low, high, factor"
 
 }

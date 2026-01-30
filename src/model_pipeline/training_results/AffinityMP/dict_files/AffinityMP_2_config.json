@@ -1,0 +1,30 @@
+{
+    "train_repeat": 1,
+    "train_repeat_comment": "How many times training is done for the same config, to get average/ best results",
+    "data_path_train": "/home/kalmary/Dokumenty/PROGRAMMING/Tree-Clustering-Graph/data/edges/train",
+    "data_path_test": "/home/kalmary/Dokumenty/PROGRAMMING/Tree-Clustering-Graph/data/edges/test",
+    "data_path_val": "/home/kalmary/Dokumenty/PROGRAMMING/Tree-Clustering-Graph/data/edges/val",
+    "batch_size": 3072,
+    "radius": 0.5,
+    "epochs": 75,
+    "general_convention_comment": "start, stop, step",
+    "learning_rate": 0.0001,
+    "weight_decay": 1e-05,
+    "learning_rate_comment": "low_lr, high_lr, factor",
+    "scheduler_params_comment": [],
+    "pct_start": 0.2,
+    "pct_start_comment": "start, stop, step",
+    "div_factor": 100.0,
+    "div_factor_comment": "low, high, factor",
+    "final_div_factor": 1000.0,
+    "final_div_factor_comment": "low, high, factor",
+    "device": "cuda",
+    "model": null,
+    "model_config": {
+        "input_dim": 4,
+        "hidden_dims": [
+            16
+        ],
+        "dropout": 0.0
+    }
+}
