@@ -24,7 +24,12 @@ def read_laz_dir(laz_dir: Path):
         laz = laspy.read(laz_path)
 
         points = np.stack([laz.x, laz.y, laz.z], axis=1)
+
+
         tree_ids = np.asarray(laz["treeID"], dtype=np.int32)
+        points = points[tree_ids != 0]
+        tree_ids = tree_ids[tree_ids != 0]
+        tree_ids -= 1  # Make tree IDs zero-based
 
         data.append((laz_path, points, tree_ids))
 
@@ -63,9 +68,9 @@ def build_spatial_tree_windows(
 
     start_idx = random.choice(list(unused))
     k = random.randint(*first_range)
-    _, nn = kdtree.query(tree_centers[start_idx], k=k)
+    _, window_nn = kdtree.query(tree_centers[start_idx], k=k)
 
-    current_window = list(nn)
+    current_window = list(window_nn)
     windows.append(current_window)
     unused -= set(current_window)
 
@@ -78,9 +83,9 @@ def build_spatial_tree_windows(
             seed_center = tree_centers[random.choice(list(unused))]
 
         k = random.randint(*next_range)
-        _, nn = kdtree.query(seed_center, k=k)
+        _, window_nn = kdtree.query(seed_center, k=k)
 
-        candidates = seed_idxs + [i for i in nn if i in unused]
+        candidates = seed_idxs + [i for i in window_nn if i in unused]
         candidates = list(dict.fromkeys(candidates))
 
         if len(candidates) < k:
@@ -104,24 +109,31 @@ def save_tree_windows(
     windows: list,
     output_dir: Path,
     laz_name: str,
+    verbose: bool = False,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for i, win in tqdm(
-        enumerate(windows),
-        total=len(windows),
-        desc=f"Saving windows [{laz_name}]",
-        leave=False,
-    ):
+    iterator = enumerate(windows)
+    if verbose:
+        iterator = tqdm(iterator, total=len(windows), desc=f"Saving windows [{laz_name}]", leave=False)
+    
+    for i, win in iterator:
         tree_ids = tree_ids_unique[win]
-
-        idxs = []
-        for tid in tree_ids:
-            idxs.extend(tree_to_indices[tid])
-
+        
+        idxs = np.concatenate([tree_to_indices[tid] for tid in tree_ids])
         window_points = points[idxs]
+        
+        # Build labels directly with consecutive integers
+        window_labels = np.zeros(len(idxs), dtype=np.int32)
+        offset = 0
+        for new_id, tid in enumerate(tree_ids):
+            n_pts = len(tree_to_indices[tid])
+            window_labels[offset:offset + n_pts] = new_id
+            offset += n_pts
+        
+        window_data = np.column_stack([window_points, window_labels])
         out_path = output_dir / f"{laz_name}_trees_{i:06d}.npy"
-        np.save(out_path, window_points)
+        np.save(out_path, window_data)
 
 
 def process_single_laz(
@@ -201,3 +213,22 @@ def main():
 
 if __name__ == "__main__":
     main()
+    import pyvista as pv
+
+    paths= sorted(Path("data/cut").glob("*.npy"))
+    for p in paths:
+        arr = np.load(p)
+        cloud = pv.PolyData(arr[:, :3])
+
+        # Konfiguracja renderowania w przeglądarce
+        pv.set_jupyter_backend('trame') # Działa też w zwykłych skryptach .py
+
+        # Tworzenie plottera
+        plotter = pv.Plotter()
+        plotter.add_mesh(cloud, color='green', point_size=5, render_points_as_spheres=True)
+
+        # Wyświetlenie - to otworzy przeglądarkę
+        plotter.show()
+
+        plotter.close()
+        plotter.deep_clean()
