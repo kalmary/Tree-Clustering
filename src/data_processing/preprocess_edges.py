@@ -86,7 +86,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp=True, verbose=Fals
         feat = edge_features(superpoints[i], superpoints[j])
         label = float(sp_tree_ids[i] == sp_tree_ids[j])
         edge_data[idx] = np.append(feat, label)
-    print(edge_data)
+
     np.save(output_path, edge_data)
     
     if verbose:
