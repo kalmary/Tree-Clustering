@@ -8,6 +8,11 @@ from sklearn.model_selection import train_test_split
 import shutil
 from tqdm import tqdm
 
+base_dir = Path(__file__).parent.parent.parent
+src_dir = base_dir / "src"
+import sys
+sys.path.append(str(src_dir))
+
 
 def read_laz_dir(laz_dir: Path):
     """
@@ -213,22 +218,9 @@ def main():
 
 if __name__ == "__main__":
     main()
-    import pyvista as pv
+    from utils.plot_cloud import plot_cloud
 
     paths= sorted(Path("data/cut").glob("*.npy"))
     for p in paths:
         arr = np.load(p)
-        cloud = pv.PolyData(arr[:, :3])
-
-        # Konfiguracja renderowania w przeglądarce
-        pv.set_jupyter_backend('trame') # Działa też w zwykłych skryptach .py
-
-        # Tworzenie plottera
-        plotter = pv.Plotter()
-        plotter.add_mesh(cloud, color='green', point_size=5, render_points_as_spheres=True)
-
-        # Wyświetlenie - to otworzy przeglądarkę
-        plotter.show()
-
-        plotter.close()
-        plotter.deep_clean()
+        plot_cloud(arr[:, :3])

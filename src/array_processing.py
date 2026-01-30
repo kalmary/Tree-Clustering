@@ -38,9 +38,9 @@ def instance_segmentation(points, chunk_id=0, verbose=False, use_mp=False, n_job
     
     centroids = np.array([sp.centroid for sp in superpoints])
     if use_mp and len(superpoints) > 1000:
-        edges = build_edges_mp(centroids, n_jobs=n_jobs)
+        edges = build_edges_mp(centroids, radius=[0.3], n_jobs=n_jobs)
     else:
-        edges = build_edges(centroids)
+        edges = build_edges(centroids, radius=[0.3])
 
     uf = UnionFind(len(superpoints))
 

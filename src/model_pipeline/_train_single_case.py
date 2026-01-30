@@ -12,7 +12,7 @@ src_dir = pth.Path(__file__).parent.parent
 sys.path.append(str(src_dir))
 
 from AffinityMLP import AffinityMLP
-from _data_loader import Dataset
+from _data_loader import EdgeDataset
 
 from utils import get_dataset_len
 from utils.weights import calculate_binary_weights
@@ -33,10 +33,10 @@ def train_model(
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,
-        num_workers=config['num_workers'],
+        num_workers=10,
         pin_memory=False
     )
-    
+
     val_dataset = EdgeDataset(
         base_dir=config['data_path_val'],
         batch_size=config['batch_size'],
@@ -47,33 +47,35 @@ def train_model(
     val_loader = DataLoader(
         val_dataset,
         batch_size=None,
-        num_workers=config['num_workers'],
+        num_workers=10,
         pin_memory=False
     )
 
     total_t = get_dataset_len(train_loader)
     total_v = get_dataset_len(val_loader)
     
-    weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=True)
-    weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=True)
+    weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=False)
+    weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=False)
 
     model = AffinityMLP(config['model_config'])
     model.to(config['device'])
     
-    criterion_t = nn.BCEWithLogitsLoss(pos_weight=weights_t.to(config['device'])).to(config['device'])
-    criterion_v = nn.BCEWithLogitsLoss(pos_weight=weights_v.to(config['device'])).to(config['device'])
+    weights_t = torch.tensor(weights_t, dtype=torch.float32)
+    weights_v = torch.tensor(weights_v, dtype=torch.float32)
+
+    criterion_t = nn.BCEWithLogitsLoss(pos_weight=weights_t).to(config['device'])
+    criterion_v = nn.BCEWithLogitsLoss(pos_weight=weights_v).to(config['device'])
     
     optimizer = optim.AdamW(
         model.parameters(),
         lr=config['learning_rate'],
         weight_decay=config['weight_decay']
     )
-    
-    total_steps = config['steps_per_epoch'] * config['epochs']
+
     scheduler = OneCycleLR(
         optimizer,
         max_lr=config['learning_rate'],
-        total_steps=total_steps,
+        total_steps=total_t*config['epochs'],
         pct_start=config['pct_start'],
         anneal_strategy='cos',
         div_factor=config['div_factor'],
@@ -89,7 +91,7 @@ def train_model(
         model.train()
         epoch_loss, epoch_f1, epoch_samples = 0.0, 0.0, 0
         
-        pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{config['epochs']}", leave=False)
+        pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{config['epochs']}", total=total_t, leave=False)
         for batch_x, batch_y in pbar:
             batch_x = batch_x.to(config['device'])
             batch_y = batch_y.to(config['device'])
@@ -124,7 +126,7 @@ def train_model(
         epoch_loss_v, epoch_f1_v, epoch_samples_v = 0.0, 0.0, 0
         
         with torch.no_grad():
-            pbar_v = tqdm(val_loader, desc=f"Val {epoch+1}/{config['epochs']}", leave=False)
+            pbar_v = tqdm(val_loader, desc=f"Val {epoch+1}/{config['epochs']}", total=total_v, leave=False)
             for batch_x, batch_y in pbar_v:
                 batch_x = batch_x.to(config['device'])
                 batch_y = batch_y.to(config['device'])
