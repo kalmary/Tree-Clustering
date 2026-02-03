@@ -36,9 +36,7 @@ def read_laz_dir(laz_dir: Path):
         tree_ids = tree_ids[tree_ids != 0]
         tree_ids -= 1  # Make tree IDs zero-based
 
-        data.append((laz_path, points, tree_ids))
-
-    return data
+        yield laz_path, points, tree_ids
 
 
 def group_points_by_tree(tree_ids: np.ndarray):
@@ -114,13 +112,11 @@ def save_tree_windows(
     windows: list,
     output_dir: Path,
     laz_name: str,
-    verbose: bool = False,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
-
+    
     iterator = enumerate(windows)
-    if verbose:
-        iterator = tqdm(iterator, total=len(windows), desc=f"Saving windows [{laz_name}]", leave=False)
+    iterator = tqdm(iterator, total=len(windows), desc=f"Saving windows [{laz_name}]", leave=False)
     
     for i, win in iterator:
         tree_ids = tree_ids_unique[win]
@@ -201,10 +197,8 @@ def main():
     cut_dir = Path("data/cut")
     split_dir = Path("data/split")
 
-    laz_data = read_laz_dir(input_dir)
-
     for laz_path, points, tree_ids in tqdm(
-        laz_data, desc="Processing LAZ files"
+        read_laz_dir(input_dir), desc="Processing LAZ files"
     ):
         process_single_laz(
             laz_path,
@@ -212,15 +206,15 @@ def main():
             tree_ids,
             cut_dir,
         )
-
+    
     split_paths(cut_dir, split_dir)
 
 
 if __name__ == "__main__":
     main()
-    from utils.plot_cloud import plot_cloud
+    # from utils.plot_cloud import plot_cloud
 
-    paths= sorted(Path("data/cut").glob("*.npy"))
-    for p in paths:
-        arr = np.load(p)
-        plot_cloud(arr[:, :3])
+    # paths= sorted(Path("data/cut").glob("*.npy"))
+    # for p in paths:
+    #     arr = np.load(p)
+    #     plot_cloud(arr[:, :3])

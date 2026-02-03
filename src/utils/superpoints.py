@@ -73,7 +73,7 @@ def build_superpoints_mp(points, radius=0.2, min_pts=30, max_pts=300, n_jobs=-1)
     for chunk_sps in results:
         all_superpoints.extend(chunk_sps)
     
-    all_superpoints.sort(key=lambda x: x[0])
+    # all_superpoints.sort(key=lambda x: x[0])
     
     global_visited = set()
     final_superpoints = []
