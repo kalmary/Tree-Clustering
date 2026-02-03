@@ -379,7 +379,6 @@ def case_based_training(exp_configs: list[dict],
     logger.info('Case based training starting.')
     checkpoint = Checkpoint(existing_ok=False)
 
-
     for i, exp_config in pbar:
         logger.info(f'Case {i+1}/{len(exp_configs)}: {exp_config}')
 
@@ -407,7 +406,7 @@ def preprocess_data(radius: Union[float, list[float]]):
 
     new = []
     for file in edges_dir.glob('*.txt'):
-        with open(edges_dir.joinpath(file, 'r+')) as f:
+        with open(edges_dir.joinpath(file), 'r+') as f:
             current_radius = f.read()
             for rad in radius:
                 if float(current_radius) != rad:
@@ -511,6 +510,8 @@ def objective_function(trial: optuna.Trial,
     # start training
     best_val_f1 = 0.0
     best_val_loss = float('inf')
+
+    print(exp_config[0])
 
     for epoch_idx, (model, result_hist) in enumerate(train_model(config=exp_config)):
         
@@ -746,14 +747,14 @@ def main():
 
     if args.mode == 0:
         test_case(exp_config=exp_configs[0])
-    elif args.mode == 1 or args.mode==2:
+    elif args.mode == 1:
         case_based_training(exp_configs=exp_configs,
                             model_name=model_name)
-    elif args.mode == 3:
+    elif args.mode == 2:
         optuna_based_training(exp_config=exp_configs,
                               model_name=model_name,
                               n_trials=80)
-    elif args.mode == 4:
+    elif args.mode == 3:
         model_configs_dir = base_path.joinpath('model_configs')
         model_configs_paths_list = list(model_configs_dir.rglob('*.json'))
 
