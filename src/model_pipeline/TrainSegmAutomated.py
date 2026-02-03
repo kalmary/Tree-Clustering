@@ -223,8 +223,9 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
     
     assert model_configs_list != 0, "No models compiled. Check model_configs - most likely too big models are defined"
 
+    device = torch.device('cuda') if (('cuda' in device_name.lower() or 'gpu' in device_name.lower()) and torch.cuda.is_available()) else torch.device('cpu')
     if mode == 2:
-        device = torch.device('cuda') if (('cuda' in device_name.lower() or 'gpu' in device_name.lower()) and torch.cuda.is_available()) else torch.device('cpu')
+
         training_config['device'] = device
         
         logger.info(f'Loaded device: {device}')
@@ -239,6 +240,9 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
         logger.info(f'STOP: load_config. All files loaded.')
 
         radius = training_config['radius']
+        training_config['model_config'] = model_configs_list[0]
+        training_config['device'] = device
+
         preprocess_data(radius=radius)
 
         return exp_configs
@@ -383,11 +387,11 @@ def case_based_training(exp_configs: list[dict],
         logger.info(f'Case {i+1}/{len(exp_configs)}: {exp_config}')
 
         for model, result_hist in train_model(config=exp_config):
-            logger.info(f'Single model was generated. val_acc: {result_hist["acc_v_hist"][-1]:.3f}  val_loss: {result_hist["loss_v_hist"][-1]:.3f}')
+            logger.info(f'Single model was generated. val_f1: {result_hist["f1_v_hist"][-1]:.3f}  val_loss: {result_hist["loss_v_hist"][-1]:.3f}')
 
-            final_val = result_hist['acc_v_hist'][-1]*0.6 + (1 / (1 + result_hist['loss_v_hist'][-1]))*0.4
-
-            model, best_config, config_path, result_hist = checkpoint.check_checkpoint(model, model_name, final_val, exp_config, result_hist)
+            final_val = result_hist['f1_v_hist'][-1]*0.6 + (1 / (1 + result_hist['loss_v_hist'][-1]))*0.4
+            
+            model, best_config, config_path = checkpoint.check_checkpoint(model, model_name, final_val, exp_config, result_hist)
     
     logger.info(f'Best model saved to: {model_path}')
     logger.info(f'Best config saved to: {config_path}')
