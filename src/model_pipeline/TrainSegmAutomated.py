@@ -30,6 +30,7 @@ sys.path.append(str(src_dir))
 from _train_single_case import train_model
 from utils import load_json, save2json, save_model, convert_str_values
 from data_processing.preprocess_edges import preprocess_dataset
+from data_processing.balance_edges import balance_edge_files
 from utils import Plotter
 
 from AffinityMLP import AffinityMLP
@@ -192,12 +193,11 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
     logger.info(f'START: case_based_training.')
 
     if isinstance(mode, int):
-        if mode not in [0, 1, 2, 3]:
+        if mode not in [0, 1, 2]:
             raise ValueError(f"Invalid mode: {mode}. Must be:\n" \
                              "0 - test" \
                              "1 - single_training," \
-                             "2 - multiple trainings, grid_based," \
-                             "3 - multiple trainings, with optuna.")
+                             "2 - multiple trainings, with optuna.")
 
     base_dir = pth.Path(base_dir)
     config_files_dir = base_dir.joinpath('training_configs')
@@ -209,7 +209,7 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
 
     if mode == 0 or mode == 1:
         training_config = load_json(config_files_dir.joinpath('config_train_single.json'))
-    elif mode == 2 or mode == 3:
+    elif mode == 2:
         training_config = load_json(config_files_dir.joinpath('config_train.json'))
     
     logger.info(f'Loaded training config for mode: {mode}.')
@@ -224,7 +224,7 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
     
     assert model_configs_list != 0, "No models compiled. Check model_configs - most likely too big models are defined"
 
-    if mode == 3:
+    if mode == 2:
         device = torch.device('cuda') if (('cuda' in device_name.lower() or 'gpu' in device_name.lower()) and torch.cuda.is_available()) else torch.device('cpu')
         training_config['device'] = device
         
@@ -254,7 +254,7 @@ def test_case(exp_config: dict) -> None:
     exp_config['epochs'] = 2
     
     try:
-        for _, _ in train_model(training_dict=exp_config):
+        for _, _ in train_model(config=exp_config):
             pass
     except Exception as e:
         logger.error(f'ERROR: test_case. Error message: {e}')
@@ -383,7 +383,7 @@ def case_based_training(exp_configs: list[dict],
     for i, exp_config in pbar:
         logger.info(f'Case {i+1}/{len(exp_configs)}: {exp_config}')
 
-        for model, result_hist in train_model(training_dict=exp_config):
+        for model, result_hist in train_model(config=exp_config):
             logger.info(f'Single model was generated. val_acc: {result_hist["acc_v_hist"][-1]:.3f}  val_loss: {result_hist["loss_v_hist"][-1]:.3f}')
 
             final_val = result_hist['acc_v_hist'][-1]*0.6 + (1 / (1 + result_hist['loss_v_hist'][-1]))*0.4
@@ -396,37 +396,58 @@ def case_based_training(exp_configs: list[dict],
 
     summary(model)
 
-def preproces_data(exp_config: dict, radius: float):
+def preprocess_data(radius: Union[float, list[float]]):
+    if isinstance(radius, float):
+        radius = [radius]
+
     logger = logging.getLogger(__name__)
-    data_path_train = exp_config['data_path_train']
-    data_path = pth.Path(data_path)
-    edges_dir = data_path.parent
-    with open(edges_dir.joinpath('radius.txt'), 'r+') as f:
-        current_radius = f.read()
-        if float(current_radius) != radius:
-            f.seek(0)
-            f.write(str(radius))
-            f.truncate()
-            logger.info(f'Updated radius in {data_dir.joinpath("radius.txt")} to {radius}')
+
+    project_dir = pth.Path(__file__).parent.parent.parent
+    edges_dir = project_dir.joinpath('data/edges')
+
+    new = []
+    for file in edges_dir.glob('*.txt'):
+        with open(edges_dir.joinpath(file, 'r+')) as f:
+            current_radius = f.read()
+            for rad in radius:
+                if float(current_radius) != rad:
+                    f.seek(0)
+                    f.write(str(rad))
+                    f.truncate()
+                    new.append(True)
+                else:
+                    new.append(False)
+    update_dataset = any(new)
+    if not update_dataset:
+        return
+    else:
+        logger.info(f'Updated radius in {edges_dir.joinpath("radius.txt")} to {radius}')
     
-    # clear edges dir but leave radius.txt
-    for file in edges_dir.iterdir():
-        if file.is_dir() and file.suffix != '.txt':
-            shutil.rmtree(file)
-            logger.info(f'Deleted existing edge directory: {file}')
-    split_dir = edges_dir.parent.joinpath('split')
+        # clear edges dir but leave radius.txt
+        for file in edges_dir.iterdir():
+            if file.is_dir() and file.suffix != '.txt':
+                shutil.rmtree(file)
+                logger.info(f'Deleted existing edge directory: {file}')
+        split_dir = edges_dir.parent.joinpath('split')
 
-
-    preprocess_dataset(
-            input_dir=split_dir,
-            output_dir=edges_dir,
-            radius=radius,
-            use_mp=True,
-            verbose=False,
-            n_jobs=-1
-        )
+        logger.info(f'Preprocessing dataset with new radius values: {radius}')
+        preprocess_dataset(
+                input_dir=split_dir,
+                output_dir=edges_dir,
+                radius=radius,
+                use_mp=True,
+                verbose=False,
+                n_jobs=-1
+            )
+        
+        balance_edge_files(edges_dir=edges_dir,
+                        target_ratio=2.,
+                        split='train')
+        
 
             
+
+           
 
 
 def objective_function(trial: optuna.Trial,
@@ -454,7 +475,9 @@ def objective_function(trial: optuna.Trial,
 
     batch_size = trial.suggest_categorical('batch_size', get_step_list(exp_config['batch_size']))
     epochs = trial.suggest_categorical('epochs', get_step_list(exp_config['epochs']))
+
     radius = trial.suggest_categorical('radius', get_step_list(exp_config['radius']))
+
     pct_start = trial.suggest_categorical('pct_start', get_step_list(exp_config['pct_start']))
     div_factor = trial.suggest_categorical('div_factor', get_factor_list(exp_config['div_factor']))
     fin_div_factor = trial.suggest_categorical('final_div_factor', get_factor_list(exp_config['final_div_factor']))
@@ -473,6 +496,9 @@ def objective_function(trial: optuna.Trial,
         'final_div_factor': fin_div_factor,
         'train_repeat':1
     })
+
+    preprocess_data(radius=radius)
+
 
     logger.info(f'Generated exp_config for trial: {trial.number}')
     for key, value in exp_config.items():
@@ -647,15 +673,14 @@ def argparser():
         '--mode',
         type=int,
         default=0,
-        choices=[0, 1, 2, 3, 4], # choice limit
+        choices=[0, 1, 2, 3], # choice limit
         help=(
             "Device for tensor based computation.\n"
             'Pick:\n'
             '0: test\n'
             '1: single training\n'
-            '2: multiple trainings, grid_based\n'
-            '3: multiple trainings, with optuna\n'
-            '4: only check models'
+            '2: multiple trainings, with optuna\n'
+            '3: only check models'
         )
     )
 
@@ -666,7 +691,7 @@ def update_paths(exp_configs: list) -> list:
     data_path = base_path.joinpath('data/edges')
     data_path.mkdir(exist_ok=True, parents=True)
 
-    # Handle mode 3 case: [exp_config_dict, model_configs_list]
+    # Handle mode 2 case: [exp_config_dict, model_configs_list]
     if len(exp_configs) == 2 and isinstance(exp_configs[1], list):
         exp_config = exp_configs[0]
         exp_config["data_path_train"] = str(data_path.joinpath('train'))
@@ -674,7 +699,7 @@ def update_paths(exp_configs: list) -> list:
         exp_config["data_path_test"] = str(data_path.joinpath('test'))
         return exp_configs
     
-    # Handle mode 1/2 case: list of exp_config dicts
+    # Handle mode 1 case: list of exp_config dicts
     for exp_config in exp_configs:
         exp_config["data_path_train"] = str(data_path.joinpath('train'))
         exp_config["data_path_val"] = str(data_path.joinpath('val'))
