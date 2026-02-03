@@ -35,7 +35,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, radius: float = 1.5, use_
         sp_indices = list(build_superpoints(xyz))
     
     if not sp_indices:
-        np.save(output_path, np.empty((0, 5), dtype=np.float32))
+        np.save(output_path, np.empty((0, 9), dtype=np.float32))
         return
     
     # Extract superpoint features and tree_ids
@@ -60,7 +60,8 @@ def preprocess_cloud_to_edges(cloud_path, output_path, radius: float = 1.5, use_
             verticality=verticality,
             n_points=len(idx),
             bbox_radius=bbox_radius,
-            chunk_id=0
+            chunk_id=0,
+            height_extent=xyz[idx, 2].max() - xyz[idx, 2].min()
         ))
     
     # Build edges
@@ -71,12 +72,12 @@ def preprocess_cloud_to_edges(cloud_path, output_path, radius: float = 1.5, use_
         edges = build_edges(centroids, radius=radius)
     
     if not edges:
-        np.save(output_path, np.empty((0, 5), dtype=np.float32))
+        np.save(output_path, np.empty((0, 9), dtype=np.float32))
         return
     
     # Extract edge features and labels
     n_edges = len(edges)
-    edge_data = np.empty((n_edges, 5), dtype=np.float32)
+    edge_data = np.empty((n_edges, 9), dtype=np.float32)
     
     iterator = enumerate(edges)
     if verbose:
@@ -106,7 +107,11 @@ def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, 
     if verbose:
         print(f"Found {len(npy_files)} files to process")
     
-    for npy_file in tqdm(npy_files, desc="Processing files"):
+    if verbose:
+        pbar = tqdm(npy_files, desc="Processing files")
+    else:
+        pbar = npy_files
+    for npy_file in pbar:
         relative_path = npy_file.relative_to(input_path)
         out_file = output_path / relative_path
         out_file.parent.mkdir(parents=True, exist_ok=True)

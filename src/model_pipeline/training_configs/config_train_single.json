@@ -8,13 +8,14 @@
     
     "batch_size": 4096,
     "radius": 1.5,
-
     "epochs": 100,
+
     "focal_loss_gamma": 1.0,
     "learning_rate": 0.001,
     "weight_decay": 0.01,
+
     "scheduler_params_comment": [],
-    "pc_start": 0.2,
+    "pct_start": 0.2,
     "div_factor": 100,
     "final_div_factor": 10000
 }

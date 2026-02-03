@@ -37,7 +37,7 @@ from AffinityMLP import AffinityMLP
 
 
 def check_models(model_configs_paths: list[pth.Path],
-                 max_input_size = (1, 8192, 4),
+                 max_input_size = (8192, 8),
                  max_memory_GB = 20,
                  verbose: bool = False) -> tuple[list[dict], list[pth.Path]]:
     """
@@ -110,7 +110,6 @@ def get_factor_list(param_value_list: list[Union[float]]) -> list[Union[float]]:
     factor_list.sort()
     return factor_list
 
-    
 
 def generate_experiment_configs(training_config: dict, 
                                 model_configs_list: Sequence[dict],
@@ -220,7 +219,7 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
         model_configs_paths_list = [p for p in model_configs_paths_list if "single" not in p.stem]
     
     training_config = convert_str_values(training_config)
-    model_configs_list, _ = check_models(model_configs_paths_list, max_input_size=(8, 2*8192, 4), max_memory_GB=32)
+    model_configs_list, _ = check_models(model_configs_paths_list, max_input_size=(8192, 8), max_memory_GB=32)
     
     assert model_configs_list != 0, "No models compiled. Check model_configs - most likely too big models are defined"
 
@@ -235,11 +234,12 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
 
         return [training_config, model_configs_list]
     else:
-        exp_configs = generate_experiment_configs(training_config, 
-                                            model_configs_list, 
-                                            device_name = device_name)
         
+        exp_configs = [training_config]
         logger.info(f'STOP: load_config. All files loaded.')
+
+        radius = training_config['radius']
+        preprocess_data(radius=radius)
 
         return exp_configs
 
@@ -405,17 +405,29 @@ def preprocess_data(radius: Union[float, list[float]]):
     edges_dir = project_dir.joinpath('data/edges')
 
     new = []
-    for file in edges_dir.glob('*.txt'):
-        with open(edges_dir.joinpath(file), 'r+') as f:
-            current_radius = f.read()
-            for rad in radius:
-                if float(current_radius) != rad:
-                    f.seek(0)
-                    f.write(str(rad))
-                    f.truncate()
-                    new.append(True)
-                else:
-                    new.append(False)
+    
+    radius_files = list(edges_dir.glob('*.txt'))
+    if len(radius_files) == 0:
+        logger.warning(f'No radius files found in {edges_dir}')
+        new.append(True)
+        with open(edges_dir.joinpath('radius.txt'), 'w') as f:
+            f.write(str(radius[0]))
+    else:
+        for file in edges_dir.glob('*.txt'):
+            with open(edges_dir.joinpath(file), 'r+') as f:
+                current_radius = f.read()
+                for rad in radius:
+                    if len(current_radius) != 0:
+                        if float(current_radius) != rad:
+                            f.seek(0)
+                            f.write(str(rad))
+                            f.truncate()
+                            new.append(True)
+                        else:
+                            new.append(False)
+                    else:
+                        f.write(str(rad))
+                        new.append(True)
     update_dataset = any(new)
     if not update_dataset:
         return
@@ -440,7 +452,7 @@ def preprocess_data(radius: Union[float, list[float]]):
             )
         
         balance_edge_files(edges_dir=edges_dir,
-                        target_ratio=2.,
+                        target_ratio=1.,
                         split='train')
         
 
@@ -511,7 +523,6 @@ def objective_function(trial: optuna.Trial,
     best_val_f1 = 0.0
     best_val_loss = float('inf')
 
-    print(exp_config[0])
 
     for epoch_idx, (model, result_hist) in enumerate(train_model(config=exp_config)):
         
@@ -702,6 +713,7 @@ def update_paths(exp_configs: list) -> list:
     
     # Handle mode 1 case: list of exp_config dicts
     for exp_config in exp_configs:
+
         exp_config["data_path_train"] = str(data_path.joinpath('train'))
         exp_config["data_path_val"] = str(data_path.joinpath('val'))
         exp_config["data_path_test"] = str(data_path.joinpath('test'))
@@ -741,7 +753,7 @@ def main():
     model_name = args.model_name
 
     base_path = pth.Path(__file__).parent
-    if args.mode != 4:
+    if args.mode != 3:
         exp_configs  = load_config(base_path, device, mode = args.mode)
         exp_configs = update_paths(exp_configs)
 
@@ -759,7 +771,7 @@ def main():
         model_configs_paths_list = list(model_configs_dir.rglob('*.json'))
 
         check_models(model_configs_paths=model_configs_paths_list, 
-                     max_input_size=(1, 8192, 4), 
+                     max_input_size=(8192, 8), 
                      max_memory_GB=20,
                      verbose=True)
 

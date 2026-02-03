@@ -59,8 +59,8 @@ class EdgeDataset(IterableDataset):
                 np.random.shuffle(edges)
             
             for edge in edges:
-                x = edge[:4]  # features
-                y = edge[4]   # label
+                x = edge[:8]  # features
+                y = edge[8]   # label
                 yield (
                     torch.tensor(x, dtype=torch.float32),
                     torch.tensor(y, dtype=torch.float32)

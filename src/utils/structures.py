@@ -11,6 +11,8 @@ class SuperPoint:
     n_points: int
     bbox_radius: float
     chunk_id: int
+    point_count: int = 0,
+    height_extent: float = 0.0
 
 
 class UnionFind:
