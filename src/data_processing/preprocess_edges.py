@@ -4,14 +4,14 @@ import sys
 import pathlib as pth
 from tqdm import tqdm
 from typing import Union
+from itertools import tee
 
 src_dir = pth.Path(__file__).parent.parent
 sys.path.append(str(src_dir))
 
 from utils.superpoints import build_superpoints, build_superpoints_mp
-from utils.features import superpoint_features
+from utils.features import superpoint_features_batch
 from utils.graph import build_edges_multi_radius
-from utils.edge_features import edge_features
 from utils.structures import SuperPoint
 
 
@@ -29,7 +29,7 @@ def preprocess_cloud_to_edges(
 
     # --- Superpoints ---
     if use_mp:
-        sp_indices = build_superpoints_mp(xyz)
+        sp_indices = build_superpoints_mp(xyz, n_jobs=n_jobs)
     else:
         sp_indices = list(build_superpoints(xyz))
 
@@ -37,60 +37,60 @@ def preprocess_cloud_to_edges(
         np.save(output_path, np.empty((0, 1), dtype=np.float32))
         return
 
+    # --- Extract features for all superpoints at once ---
+    centroids, pca_dirs, thicknesses, verticalities, sp_tree_ids = \
+        superpoint_features_batch(xyz, sp_indices, tree_ids)
+    
     n_sp = len(sp_indices)
-    sp_tree_ids = np.empty(n_sp, dtype=np.int32)
-    superpoints = []
 
-    iterator = enumerate(sp_indices)
-    if verbose:
-        iterator = tqdm(iterator, total=n_sp, desc="Extracting SP features", leave=False)
-
-    for i, idx in iterator:
-        idx = np.asarray(idx, dtype=int)
-        centroid, pca_dir, thickness, verticality, bbox_radius = superpoint_features(xyz, idx)
-
-        sp_tree_ids[i] = np.bincount(tree_ids[idx]).argmax()
-        superpoints.append(SuperPoint(
-            id=i,
-            centroid=centroid,
-            pca_dir=pca_dir,
-            thickness=thickness,
-            verticality=verticality,
-            n_points=len(idx),
-            bbox_radius=bbox_radius,
-            chunk_id=0
-        ))
-
-    # --- Multi-radius edges ---
-    centroids = np.array([sp.centroid for sp in superpoints])
-
-    edges_per_radius, radii = build_edges_multi_radius(
-        centroids,
-        radius=radius,
-        use_mp=use_mp,
-        n_jobs=n_jobs
-    )
-
-    total_edges = sum(len(e) for e in edges_per_radius)
+    # --- Multi-radius edges (generator) ---
+    radii = radius if isinstance(radius, list) else [radius]
+    n_feat = 4 * len(radii)
+    
+    # First pass: count total edges
+    edges_gen0, edges_gen = tee(build_edges_multi_radius(centroids, radius=radius, use_mp=use_mp, n_jobs=n_jobs), 2)
+    
+    total_edges = sum(len(edges) for edges, _ in edges_gen0)
+    
     if total_edges == 0:
-        np.save(output_path, np.empty((0, 4 * len(radii) + 1), dtype=np.float32))
+        np.save(output_path, np.empty((0, n_feat + 1), dtype=np.float32))
         return
 
-    # --- Edge features ---
-    n_feat = 4 * len(radii)
+    # --- Edge features (vectorized) ---
     edge_data = np.empty((total_edges, n_feat + 1), dtype=np.float32)
 
     row = 0
-    for r_idx, edges in enumerate(edges_per_radius):
-        for i, j in edges:
-            feat = edge_features(superpoints[i], superpoints[j])  # (4,)
-
-            feat_full = np.zeros(n_feat, dtype=np.float32)
-            feat_full[r_idx * 4:(r_idx + 1) * 4] = feat
-
-            label = float(sp_tree_ids[i] == sp_tree_ids[j])
-            edge_data[row] = np.append(feat_full, label)
-            row += 1
+    for r_idx, (edges, r) in enumerate(edges_gen):
+        if len(edges) == 0:
+            continue
+        
+        edges_arr = np.array(edges, dtype=np.int32)
+        i_idx = edges_arr[:, 0]
+        j_idx = edges_arr[:, 1]
+        
+        # Vectorized feature computation
+        d = np.linalg.norm(centroids[i_idx] - centroids[j_idx], axis=1)
+        angle = np.abs(np.sum(pca_dirs[i_idx] * pca_dirs[j_idx], axis=1))
+        thickness_min = np.minimum(thicknesses[i_idx], thicknesses[j_idx])
+        thickness_max = np.maximum(thicknesses[i_idx], thicknesses[j_idx])
+        thickness_ratio = thickness_min / thickness_max
+        vertical_diff = np.abs(verticalities[i_idx] - verticalities[j_idx])
+        
+        # Stack features
+        feat = np.stack([d, angle, thickness_ratio, vertical_diff], axis=1)
+        
+        # Build full feature vector with zeros for other radii
+        n_edges = len(edges)
+        feat_full = np.zeros((n_edges, n_feat), dtype=np.float32)
+        feat_full[:, r_idx * 4:(r_idx + 1) * 4] = feat
+        
+        # Labels
+        labels = (sp_tree_ids[i_idx] == sp_tree_ids[j_idx]).astype(np.float32)
+        
+        # Combine
+        edge_data[row:row + n_edges, :-1] = feat_full
+        edge_data[row:row + n_edges, -1] = labels
+        row += n_edges
 
     np.save(output_path, edge_data)
 
