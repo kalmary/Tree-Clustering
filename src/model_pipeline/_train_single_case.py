@@ -105,7 +105,11 @@ def train_model(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            
+            try:
+                scheduler.step()
+            except Exception:
+                pass
             
             preds = torch.sigmoid(logits)
             
