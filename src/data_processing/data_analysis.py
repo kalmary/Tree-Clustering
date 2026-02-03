@@ -102,14 +102,10 @@ def analyze_edges_data(edges_dir: Path, split: str = 'train'):
     print(f"  Cross-val F1 Score: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
     
     # Feature names
-    n_radii = n_features // 4
     feature_names = []
-    for r in range(n_radii):
+    for i in range(n_features):
         feature_names.extend([
-            f"R{r+1}_norm_dist",
-            f"R{r+1}_angle",
-            f"R{r+1}_thickness_ratio",
-            f"R{r+1}_vert_diff"
+            f"Feature_{i+1}"
         ])
     
     print(f"\nFeature Importances:")
@@ -169,7 +165,7 @@ def analyze_edges_data(edges_dir: Path, split: str = 'train'):
 def main():
     edges_dir = Path("data/edges")
     
-    for split in ['train', 'val', 'test']:
+    for split in ['train']:
         if (edges_dir / split).exists():
             analyze_edges_data(edges_dir, split)
 

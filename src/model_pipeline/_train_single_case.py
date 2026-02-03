@@ -53,6 +53,9 @@ def train_model(
 
     total_t = get_dataset_len(train_loader)
     total_v = get_dataset_len(val_loader)
+
+    assert total_t > 0, "Training dataset is empty."
+    assert total_v > 0, "Validation dataset is empty."
     
     weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=False)
     weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=False)

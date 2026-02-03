@@ -32,6 +32,7 @@ class AffinityMLP(nn.Module):
         return cls(cfg.get('affinity_mlp', {}))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
         return self.net(x).squeeze(-1)
 
 

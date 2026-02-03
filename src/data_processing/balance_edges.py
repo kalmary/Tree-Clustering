@@ -58,8 +58,8 @@ def balance_edge_files(
         try:
             data = np.load(file_path)
             
-            if data.ndim != 2 or data.shape[1] != 5:
-                print(f"WARNING: Skipping {file_path.name}: expected shape (n, 5), got {data.shape}")
+            if data.ndim != 2 or data.shape[1] != 9:
+                print(f"WARNING: Skipping {file_path.name}: expected shape (n, 9), got {data.shape}")
                 continue
             
             labels = data[:, label_col].astype(int)
