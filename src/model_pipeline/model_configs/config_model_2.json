@@ -1,5 +1,5 @@
 {
-  "input_dim": 4,
+  "input_dim": 10,
   "hidden_dims": [64, 32, 16],
   "dropout": 0.1
 }

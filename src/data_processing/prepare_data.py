@@ -29,6 +29,7 @@ def read_laz_dir(laz_dir: Path):
         laz = laspy.read(laz_path)
 
         points = np.stack([laz.x, laz.y, laz.z], axis=1)
+        diff = np.diff(points)
 
 
         tree_ids = np.asarray(laz["treeID"], dtype=np.int32)
@@ -175,7 +176,7 @@ def split_paths(cut_dir: Path, split_dir: Path):
     train_paths, temp_paths = train_test_split(
         npy_paths, test_size=0.3, random_state=42
     )
-    val_paths, test_paths = train_test_split(
+    test_paths, val_paths = train_test_split(
         temp_paths, test_size=0.3, random_state=42
     )
 
@@ -212,9 +213,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # from utils.plot_cloud import plot_cloud
-
-    # paths= sorted(Path("data/cut").glob("*.npy"))
-    # for p in paths:
-    #     arr = np.load(p)
-    #     plot_cloud(arr[:, :3])

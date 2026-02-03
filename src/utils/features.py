@@ -1,18 +1,39 @@
 import numpy as np
 
 def superpoint_features(points, indices):
-    P = points[indices]
+    P = points[indices]           # (N,3)
     centroid = P.mean(axis=0)
 
     Q = P - centroid
-    _, S, Vt = np.linalg.svd(Q, full_matrices=False)
+    _, S, Vh = np.linalg.svd(Q, full_matrices=False)
 
-    pca_dir = Vt[0]
-    verticality = abs(pca_dir[2])
+    # principal axis
+    pca_dir = Vh[0]
+    verticality = abs(np.dot(pca_dir, np.array([0.0, 0.0, 1.0])))
+
+    # thickness / spread
     thickness = np.sqrt(S[1] * S[2])
     bbox_radius = 0.5 * np.linalg.norm(P.max(axis=0) - P.min(axis=0))
+    spread = P.max(axis=0) - P.min(axis=0)
 
-    return centroid, pca_dir, thickness, verticality, bbox_radius
+    # optional geometric ratios
+    linear_ratio = S[0] / (S[1] + 1e-6)
+    planar_ratio = S[1] / (S[2] + 1e-6)
+    aspect_xy = spread[0] / (spread[1]+1e-6)
+    aspect_xz = spread[0] / (spread[2]+1e-6)
+    aspect_yz = spread[1] / (spread[2]+1e-6)
+
+    n_points = len(P)
+    min_z, max_z = P[:,2].min(), P[:,2].max()
+
+    features = np.array([
+        thickness, bbox_radius, verticality,
+        linear_ratio, planar_ratio,
+        aspect_xy, aspect_xz, aspect_yz,
+        n_points, max_z - min_z
+    ], dtype=np.float32)
+
+    return centroid, pca_dir, features
 
 def superpoint_features_batch(points, sp_indices_list, tree_ids):
     """Compute features for all superpoints at once, returning arrays."""

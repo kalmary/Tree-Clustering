@@ -143,13 +143,16 @@ def build_edges_multi_radius(
     """
     Build graph edges separately for each radius using existing build_edges_mp.
 
-    Yields:
-        (edges, radius_value) for each radius
+    Returns:
+        edges_per_radius: list[list[tuple[int, int]]]
+        radii: list[float]
     """
     if isinstance(radius, (float, int)):
         radii = [float(radius)]
     else:
         radii = list(radius)
+
+    edges_per_radius = []
 
     for r in radii:
         if use_mp and len(centroids) > 1000:
@@ -164,4 +167,7 @@ def build_edges_multi_radius(
                 radius=r
             )
 
-        yield edges, r
+        edges_per_radius.append(edges)
+
+        # yield edges_per_radius, radii
+    return edges_per_radius, radii
