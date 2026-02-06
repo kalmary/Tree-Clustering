@@ -60,7 +60,7 @@ def train_model(
     weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=False)
     weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=False)
 
-    model = AffinityMLP(config['model_config'])
+    model = AffinityMLP(config['model_config'], scaling_config=config['scaling_config'])
     model.to(config['device'])
     
     weights_t = torch.tensor(weights_t, dtype=torch.float32)

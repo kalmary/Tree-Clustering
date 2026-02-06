@@ -45,9 +45,10 @@ class EdgeDataset(IterableDataset):
             iter_files = files[worker_id::total_workers]
 
         for file_path in iter_files:
-            edges = np.load(file_path)  # shape: (N_edges, 5)
-            if len(edges) > 0:
-                yield edges
+            edges = np.load(file_path)  # shape: (N_edges, 5)          
+            yield edges
+
+
 
 
     def _edge_streamer(self):
@@ -57,10 +58,11 @@ class EdgeDataset(IterableDataset):
         for edges in self._file_streamer():
             if self.shuffle:
                 np.random.shuffle(edges)
-            
+
             for edge in edges:
                 x = edge[:8]  # features
                 y = edge[8]   # label
+
                 yield (
                     torch.tensor(x, dtype=torch.float32),
                     torch.tensor(y, dtype=torch.float32)
