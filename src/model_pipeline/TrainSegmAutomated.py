@@ -31,6 +31,7 @@ from _train_single_case import train_model
 from utils import load_json, save2json, save_model, convert_str_values
 from data_processing.preprocess_edges import preprocess_dataset
 from data_processing.balance_edges import balance_edge_files
+from data_processing.data_analysis import analyze_edges_data
 from utils import Plotter
 
 from AffinityMLP import AffinityMLP
@@ -236,7 +237,7 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
         return [training_config, model_configs_list]
     else:
         
-        exp_configs = [training_config]
+        
         logger.info(f'STOP: load_config. All files loaded.')
 
         radius = training_config['radius']
@@ -244,6 +245,12 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
         training_config['device'] = device
 
         preprocess_data(radius=radius)
+        scaling_path = pth.Path(__file__).parent.parent.parent.joinpath('data/edges/scaling_params_train.json')
+        scaling_config = load_json(scaling_path)
+        scaling_config = convert_str_values(scaling_config)
+        training_config['scaling_config'] = scaling_config
+
+        exp_configs = [training_config]
 
         return exp_configs
 
@@ -281,11 +288,13 @@ class Checkpoint:
         
 
         logger = logging.getLogger(__name__)
+        proj_dir =  pth.Path(__file__).parent.parent.parent 
 
-        model_dir =  pth.Path(__file__).parent.joinpath('training_results').joinpath(f'{model_name.rsplit('_', 1)[0]}')
+        model_dir =  proj_dir.joinpath('src/model_pipeline/training_results').joinpath(f'{model_name.rsplit('_', 1)[0]}')
         model_dir.mkdir(exist_ok=True, parents=True)
 
         model_path = model_dir.joinpath(f'{model_name}.pt')
+
 
         plot_dir = model_dir.joinpath('plots')
         if not plot_dir.exists():
@@ -389,7 +398,7 @@ def case_based_training(exp_configs: list[dict],
         for model, result_hist in train_model(config=exp_config):
             logger.info(f'Single model was generated. val_f1: {result_hist["f1_v_hist"][-1]:.3f}  val_loss: {result_hist["loss_v_hist"][-1]:.3f}')
 
-            final_val = result_hist['f1_v_hist'][-1]*0.6 + (1 / (1 + result_hist['loss_v_hist'][-1]))*0.4
+            final_val = result_hist['f1_v_hist'][-1]*0.7 + (1 / (1 + result_hist['loss_v_hist'][-1]))*0.3
             
             model, best_config, config_path = checkpoint.check_checkpoint(model, model_name, final_val, exp_config, result_hist)
     
@@ -434,6 +443,7 @@ def preprocess_data(radius: Union[float, list[float]]):
                         new.append(True)
     update_dataset = any(new)
     if not update_dataset:
+        
         return
     else:
         logger.info(f'Updated radius in {edges_dir.joinpath("radius.txt")} to {radius}')
@@ -446,18 +456,28 @@ def preprocess_data(radius: Union[float, list[float]]):
         split_dir = edges_dir.parent.joinpath('split')
 
         logger.info(f'Preprocessing dataset with new radius values: {radius}')
-        preprocess_dataset(
-                input_dir=split_dir,
-                output_dir=edges_dir,
+        for split in ['train', 'val', 'test']:
+            preprocess_dataset(
+                input_dir=f'data/split/{split}',
+                output_dir=f'data/edges/{split}',
                 radius=radius,
                 use_mp=True,
                 verbose=False,
                 n_jobs=-1
             )
         
-        balance_edge_files(edges_dir=edges_dir,
-                        target_ratio=1.,
-                        split='train')
+        balance_edge_files(
+                edges_dir, 
+                target_ratio=1.0,  # 1:1 ratio
+                split='train',
+                dry_run=False,
+                verbose=False,
+                handle_single_class='remove',  # or 'merge' or 'keep'
+                backup=False,
+                imbalance_threshold=0.7
+            )
+        
+        analyze_edges_data(edges_dir, "train", save_stats=True, verbose=False)
         
 
             
@@ -477,6 +497,10 @@ def objective_function(trial: optuna.Trial,
     
     logger = logging.getLogger(__name__)
     logger.info(f'START: objective_function')
+
+    project_dir = pth.Path(__file__).parent.parent.parent
+    scaling_path = project_dir.joinpath('data/edges/scaling_params_train.json')
+
 
     existing_ok = False
 
@@ -513,6 +537,10 @@ def objective_function(trial: optuna.Trial,
     })
 
     preprocess_data(radius=radius)
+    scaling_config = load_json(scaling_path)
+    scaling_config = convert_str_values(scaling_config)
+
+    exp_config['scaling_config'] = scaling_config
 
 
     logger.info(f'Generated exp_config for trial: {trial.number}')
@@ -544,7 +572,7 @@ def objective_function(trial: optuna.Trial,
 
 
         normalized_loss = 1 / (1 + best_val_loss)
-        final_val = 0.4 * best_val_f1 + 0.6 * normalized_loss
+        final_val = 0.9 * best_val_f1 + 0.1 * normalized_loss
 
         checkpoint.check_checkpoint(model,
                                     model_name,
@@ -625,11 +653,11 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
     best_params = best_trial.params
     best_value = best_trial.value
 
-    logger.info(f'Optimization finished. Best value of formula: 0.6 * val_acc + 0.4 * norm_val_loss: {best_value:.4f}')
+    logger.info(f'Optimization finished. Best value of formula: 0.9 * val_acc + 0.1 * norm_val_loss: {best_value:.4f}')
 
     print(20*'=')
     print(f'Optuna optimalization finished')
-    print(f'Best value of 0.6 * val_acc + 0.4 * norm_val_loss: {best_value:.4f}')
+    print(f'Best value of 0.9 * val_f1 + 0.1 * norm_val_loss: {best_value:.4f}')
     pprint(f'Best trial params:\n{best_params}')
     print(20*'=')
 
@@ -645,6 +673,7 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
 
     print('Training the best model last time: ')
 
+    preprocess_data(radius=final_exp_config['radius'])
     case_based_training([final_exp_config],
                         model_name=model_name) # FIXME inproper dict creation
     

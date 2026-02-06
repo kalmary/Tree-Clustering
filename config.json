@@ -1,7 +1,0 @@
-{
-  "affinity_mlp": {
-    "input_dim": 4,
-    "hidden_dims": [32, 16],
-    "dropout": 0.0
-  }
-}
