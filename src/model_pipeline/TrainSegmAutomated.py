@@ -408,7 +408,7 @@ def case_based_training(exp_configs: list[dict],
 
     summary(model)
 
-def preprocess_data(radius: Union[float, list[float]]):
+def preprocess_data(radius: Union[float, list[float]]) -> dict:
     if isinstance(radius, float):
         radius = [radius]
 
@@ -416,6 +416,12 @@ def preprocess_data(radius: Union[float, list[float]]):
 
     project_dir = pth.Path(__file__).parent.parent.parent
     edges_dir = project_dir.joinpath('data/edges')
+
+    scaling_config_path = edges_dir.joinpath('scaling_params_train.json')
+    scaling_config = load_json(scaling_config_path)
+    scaling_config = convert_str_values(scaling_config)
+
+    return scaling_config # TODO change hardcoding later
 
     new = []
     
@@ -443,8 +449,7 @@ def preprocess_data(radius: Union[float, list[float]]):
                         new.append(True)
     update_dataset = any(new)
     if not update_dataset:
-        
-        return
+        return scaling_config
     else:
         logger.info(f'Updated radius in {edges_dir.joinpath("radius.txt")} to {radius}')
     
@@ -477,7 +482,9 @@ def preprocess_data(radius: Union[float, list[float]]):
                 imbalance_threshold=0.7
             )
         
-        analyze_edges_data(edges_dir, "train", save_stats=True, verbose=False)
+        _, scaling_config = analyze_edges_data(edges_dir, "train", save_stats=True, verbose=False)
+
+        return scaling_config
         
 
             
@@ -523,6 +530,7 @@ def objective_function(trial: optuna.Trial,
 
 
     exp_config = exp_config.copy()
+
     exp_config.update({
         'model_config': model_config,
         'learning_rate': lr,
@@ -536,10 +544,7 @@ def objective_function(trial: optuna.Trial,
         'train_repeat':1
     })
 
-    preprocess_data(radius=radius)
-    scaling_config = load_json(scaling_path)
-    scaling_config = convert_str_values(scaling_config)
-
+    scaling_config = preprocess_data(radius=radius)
     exp_config['scaling_config'] = scaling_config
 
 
@@ -673,7 +678,9 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
 
     print('Training the best model last time: ')
 
-    preprocess_data(radius=final_exp_config['radius'])
+    scaling_config = preprocess_data(radius=final_exp_config['radius'])
+    final_exp_config["scaling_config"] = scaling_config
+
     case_based_training([final_exp_config],
                         model_name=model_name) # FIXME inproper dict creation
     

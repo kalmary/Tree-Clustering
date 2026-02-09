@@ -7,14 +7,15 @@ class AffinityMLP(nn.Module):
     def __init__(self, config: Dict[str, Any], scaling_config: Optional[Dict[str, Any]] = None, scaling_method: str = "standard") -> None:
         super().__init__()
         
-        input_dim = config.get('input_dim', 4)
-        hidden_dims = config.get('hidden_dims', [32, 16])
-        dropout = config.get('dropout', 0.0)
+        input_dim = config['input_dim']
+        hidden_dims = config['hidden_dims']
+        dropout = config['dropout']
         
         layers = []
         prev_dim = input_dim
         for h_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, h_dim))
+            layers.append(nn.BatchNorm1d(h_dim))
             layers.append(nn.ReLU())
             if dropout > 0:
                 layers.append(nn.Dropout(dropout))

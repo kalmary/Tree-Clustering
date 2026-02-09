@@ -8,7 +8,7 @@ sys.path.append(str(src_dir))
 
 from utils.superpoints import build_superpoints, build_superpoints_mp
 from utils.features import superpoint_features
-from utils.graph import build_edges, build_edges_mp
+from utils.graph import build_edges, build_edges_mp, build_edges_tree_aware, build_edges_tree_aware_hybrid
 from utils.edge_features import edge_features
 from utils.structures import SuperPoint
 
@@ -64,12 +64,13 @@ def preprocess_cloud_to_edges(cloud_path, output_path, radius: float = 1.5, use_
             height_extent=xyz[idx, 2].max() - xyz[idx, 2].min()
         ))
     
-    # Build edges
-    centroids = np.array([sp.centroid for sp in superpoints])
     if use_mp and n_sp > 1000:
-        edges = build_edges_mp(centroids, radius=radius, n_jobs=n_jobs)
+        n_jobs_edges = 1
     else:
-        edges = build_edges(centroids, radius=radius)
+        n_jobs_edges = n_jobs
+    edges = build_edges_tree_aware(superpoints=superpoints, n_jobs=n_jobs_edges, use_gpu=True)
+    # edges = build_edges_tree_aware_hybrid(superpoints, batch_size=5000)
+
     
     if not edges:
         np.save(output_path, np.empty((0, 9), dtype=np.float32))

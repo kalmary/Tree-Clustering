@@ -139,8 +139,8 @@ def train_model(
                 batch_y = batch_y.to(config['device'])
                 
                 logits = model(batch_x)
+
                 loss = criterion_v(logits, batch_y)
-                
                 preds = torch.sigmoid(logits)
                 
                 batch_f1_v = binary_f1_score(preds, batch_y)
