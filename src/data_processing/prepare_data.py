@@ -30,7 +30,6 @@ def read_laz_dir(laz_dir: Path):
 
         points = np.stack([laz.x, laz.y, laz.z], axis=1)
 
-
         tree_ids = np.asarray(laz["treeID"], dtype=np.int32)
         points = points[tree_ids != 0]
         tree_ids = tree_ids[tree_ids != 0]
@@ -61,50 +60,146 @@ def compute_tree_centers(points: np.ndarray, tree_to_indices: dict):
 
 def build_spatial_tree_windows(
     tree_centers: np.ndarray,
-    first_range=(6, 10),
-    next_range=(5, 8),
-    overlap=3,
+    min_trees_per_window: int = 6,
+    max_trees_per_window: int = 10,
+    overlap_trees: int = 3,
+    max_radius: float = None,  # NEW: enforce spatial coherence
 ):
+    """
+    Build spatially coherent windows of trees.
+    
+    Parameters:
+    -----------
+    tree_centers : np.ndarray
+        Nx3 array of tree center coordinates
+    min_trees_per_window : int
+        Minimum number of trees per window (replaces first_range[0] and next_range[0])
+    max_trees_per_window : int
+        Maximum number of trees per window (replaces first_range[1] and next_range[1])
+    overlap_trees : int
+        Number of trees to overlap between consecutive windows
+    max_radius : float, optional
+        Maximum spatial radius for a window. If None, auto-computed as 
+        median distance to the max_trees_per_window-th nearest neighbor
+    
+    Returns:
+    --------
+    list of lists
+        Each sublist contains tree indices forming a spatially coherent window
+    """
     kdtree = KDTree(tree_centers)
     num_trees = len(tree_centers)
+    
+    # Auto-compute max_radius if not provided
+    if max_radius is None:
+        # Use median distance to max_trees_per_window-th neighbor as reference
+        k = min(max_trees_per_window + 1, num_trees)
+        dists, _ = kdtree.query(tree_centers, k=k)
+        max_radius = np.median(dists[:, -1]) * 1.5  # Add 50% buffer
+        # print(f"Auto-computed max_radius: {max_radius:.2f}")
 
     unused = set(range(num_trees))
     windows = []
 
+    # First window: start from random tree
     start_idx = random.choice(list(unused))
-    k = random.randint(*first_range)
-    _, window_nn = kdtree.query(tree_centers[start_idx], k=k)
+    window = _create_spatial_window(
+        start_idx, 
+        tree_centers, 
+        kdtree, 
+        unused,
+        min_trees_per_window,
+        max_trees_per_window,
+        max_radius
+    )
+    windows.append(window)
+    unused -= set(window)
 
-    current_window = list(window_nn)
-    windows.append(current_window)
-    unused -= set(current_window)
-
+    # Subsequent windows: use overlap from previous window
     while unused:
-        if len(current_window) >= overlap:
-            seed_idxs = current_window[-overlap:]
-            seed_center = tree_centers[seed_idxs].mean(axis=0)
+        # Get seed from previous window's last trees
+        if len(windows[-1]) >= overlap_trees:
+            seed_indices = windows[-1][-overlap_trees:]
+            seed_center = tree_centers[seed_indices].mean(axis=0)
         else:
-            seed_idxs = []
-            seed_center = tree_centers[random.choice(list(unused))]
-
-        k = random.randint(*next_range)
-        _, window_nn = kdtree.query(seed_center, k=k)
-
-        candidates = seed_idxs + [i for i in window_nn if i in unused]
-        candidates = list(dict.fromkeys(candidates))
-
-        if len(candidates) < k:
-            extra = random.sample(
-                list(unused),
-                min(k - len(candidates), len(unused)),
-            )
-            candidates.extend(extra)
-
-        current_window = candidates[:k]
-        windows.append(current_window)
-        unused -= set(current_window)
+            # If not enough overlap, pick random unused tree
+            seed_idx = random.choice(list(unused))
+            seed_center = tree_centers[seed_idx]
+        
+        # Find nearest unused tree to seed_center
+        unused_centers = tree_centers[list(unused)]
+        unused_list = list(unused)
+        dists = np.linalg.norm(unused_centers - seed_center, axis=1)
+        start_idx = unused_list[np.argmin(dists)]
+        
+        window = _create_spatial_window(
+            start_idx,
+            tree_centers,
+            kdtree,
+            unused,
+            min_trees_per_window,
+            max_trees_per_window,
+            max_radius
+        )
+        windows.append(window)
+        unused -= set(window)
 
     return windows
+
+
+def _create_spatial_window(
+    start_idx: int,
+    tree_centers: np.ndarray,
+    kdtree: KDTree,
+    available: set,
+    min_trees: int,
+    max_trees: int,
+    max_radius: float
+):
+    """
+    Create a single spatially coherent window starting from start_idx.
+    Only includes trees within max_radius and from available set.
+    """
+    # Query all trees within max_radius
+    neighbor_indices = kdtree.query_ball_point(tree_centers[start_idx], max_radius)
+    
+    # Filter to only available trees
+    candidates = [idx for idx in neighbor_indices if idx in available]
+    
+    # If we don't have enough candidates, expand radius progressively
+    if len(candidates) < min_trees:
+        # Try expanding radius up to 2x
+        for multiplier in [1.5, 2.0, 2.5]:
+            neighbor_indices = kdtree.query_ball_point(
+                tree_centers[start_idx], 
+                max_radius * multiplier
+            )
+            candidates = [idx for idx in neighbor_indices if idx in available]
+            if len(candidates) >= min_trees:
+                break
+    
+    # Sort by distance to start point
+    if len(candidates) > 0:
+        dists = np.linalg.norm(
+            tree_centers[candidates] - tree_centers[start_idx], 
+            axis=1
+        )
+        sorted_indices = np.argsort(dists)
+        candidates = [candidates[i] for i in sorted_indices]
+    
+    # Take between min_trees and max_trees (but respect what's available)
+    if len(candidates) == 0:
+        # Fallback: just use start_idx
+        window = [start_idx]
+    elif len(candidates) <= min_trees:
+        # Use all candidates if we don't have enough
+        window = candidates
+    else:
+        # Normal case: random size between min and max
+        target_size = random.randint(min_trees, min(max_trees, len(candidates)))
+        window = candidates[:target_size]
+    
+    return window
 
 
 def save_tree_windows(
@@ -146,6 +241,10 @@ def process_single_laz(
     points: np.ndarray,
     tree_ids: np.ndarray,
     output_dir: Path,
+    min_trees_per_window: int = 6,
+    max_trees_per_window: int = 10,
+    overlap_trees: int = 3,
+    max_radius: float = None,
 ):
     tree_to_indices = group_points_by_tree(tree_ids)
 
@@ -155,9 +254,10 @@ def process_single_laz(
 
     windows = build_spatial_tree_windows(
         tree_centers,
-        first_range=(6, 10),
-        next_range=(5, 8),
-        overlap=3,
+        min_trees_per_window=min_trees_per_window,
+        max_trees_per_window=max_trees_per_window,
+        overlap_trees=overlap_trees,
+        max_radius=max_radius,
     )
 
     save_tree_windows(
@@ -211,6 +311,10 @@ def main():
             points,
             tree_ids,
             cut_dir,
+            min_trees_per_window=6,
+            max_trees_per_window=10,
+            overlap_trees=3,
+            max_radius=None,  # Auto-compute
         )
 
     split_paths(cut_dir, split_dir)
@@ -220,7 +324,7 @@ if __name__ == "__main__":
     main()
     from utils.plot_cloud import plot_cloud
 
-    paths= sorted(Path("data/cut").glob("*.npy"))
+    paths = sorted(Path("data/cut").glob("*.npy"))
     for p in paths:
         arr = np.load(p)
         plot_cloud(arr[:, :3])

@@ -41,6 +41,10 @@ def analyze_edges_data(edges_dir: Path, split: str = 'train', save_stats: bool =
         shapes[shape].append(npy_file.name)
         all_data.append(data)
     
+    all_data = np.vstack(all_data)
+    labels = all_data[:, -1]  # Labels
+    print(labels.min(), labels.max(), labels.mean())
+
     # Check if all files have same number of features
     if len(shapes) > 1:
         if verbose:
@@ -357,7 +361,7 @@ def analyze_edges_data(edges_dir: Path, split: str = 'train', save_stats: bool =
             
             print(f"  {name:<25} {fisher_score:>15.4f} {interpretation}")
     
-    return feature_stats
+    return feature_stats, scaling_params
 
 
 def main():
@@ -365,7 +369,7 @@ def main():
     
     for split in ['train']:
         if (edges_dir / split).exists():
-            stats = analyze_edges_data(edges_dir, split, save_stats=True, verbose=True)
+            stats, scaling_params = analyze_edges_data(edges_dir, split, save_stats=True, verbose=True)
 
 
 if __name__ == "__main__":
