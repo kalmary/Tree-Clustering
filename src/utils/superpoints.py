@@ -4,8 +4,8 @@ from scipy.spatial import cKDTree
 
 import numpy as np
 from scipy.spatial import cKDTree
-from joblib import Parallel, delayed, lock
-from multiprocessing import shared_memory
+from joblib import Parallel, delayed
+from multiprocessing import shared_memory, Lock
 from tqdm import tqdm
 from typing import Tuple
 import gc
@@ -78,8 +78,7 @@ def build_superpoints(points: np.ndarray,
         
         if len(idx) < min_pts:
             continue
-        
-        visited[idx] += 1
+
         superpoints.append(idx)
         seed_indices.append(i)
     
@@ -90,6 +89,7 @@ def _process_point_worker(i, neighbors_data, shm_visited_name, n_points, min_pts
     """Worker function - optimized."""
     shm_visited = shared_memory.SharedMemory(name=shm_visited_name)
     visited = np.ndarray(n_points, dtype=np.int32, buffer=shm_visited.buf)
+    lock = Lock()  # For thread-safe updates
     
     try:
         # Early exits
