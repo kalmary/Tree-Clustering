@@ -1,86 +1,211 @@
 import numpy as np
 from scipy.spatial import cKDTree
-from joblib import Parallel, delayed
-
-def build_superpoints(points, radius=0.2, min_pts=30, max_pts=300):
-    tree = cKDTree(points)
-    visited = np.zeros(len(points), dtype=bool)
-
-    for i in range(len(points)):
-        if visited[i]:
-            continue
-
-        idx = tree.query_ball_point(points[i], radius)
-        if len(idx) < min_pts:
-            continue
-
-        P = points[idx] - points[idx].mean(axis=0)
-        _, S, _ = np.linalg.svd(P, full_matrices=False)
-
-        linearity = S[0] / (S[1] + 1e-6)
-        if linearity < 1.5:
-            continue
-
-        idx = idx[:max_pts]
-        visited[idx] = True
-
-        yield idx
 
 
-def _process_chunk(points, tree, start_idx, end_idx, radius, min_pts, max_pts):
-    chunk_superpoints = []
-    visited_local = set()
+import numpy as np
+from scipy.spatial import cKDTree
+from joblib import Parallel, delayed, lock
+from multiprocessing import shared_memory
+from tqdm import tqdm
+from typing import Tuple
+import gc
+
+def build_superpoints(points: np.ndarray,
+                      chunk: int = 500,
+                      radius: float = 0.2,
+                      min_pts: int = 30,
+                      max_pts: int = 300,
+                      max_visits: int = 5,
+                      verbose: bool = False):
     
-    for i in range(start_idx, end_idx):
-        if i in visited_local:
-            continue
-        
-        idx = tree.query_ball_point(points[i], radius)
-        if len(idx) < min_pts:
-            continue
-        
-        P = points[idx] - points[idx].mean(axis=0)
-        _, S, _ = np.linalg.svd(P, full_matrices=False)
-        
-        linearity = S[0] / (S[1] + 1e-6)
-        if linearity < 1.5:
-            continue
-        
-        idx = idx[:max_pts]
-        visited_local.update(idx)
-        chunk_superpoints.append((i, idx))
-    
-    return chunk_superpoints
-
-
-def build_superpoints_mp(points, radius=0.2, min_pts=30, max_pts=300, n_jobs=-1):
+    """Sequential version with density filtering."""
     n_points = len(points)
-    
-    if n_jobs == -1:
-        import os
-        n_jobs = os.cpu_count()
-    
     tree = cKDTree(points)
-    chunk_size = max(1, n_points // n_jobs)
-    chunks = [(i, min(i + chunk_size, n_points)) for i in range(0, n_points, chunk_size)]
     
-    results = Parallel(n_jobs=n_jobs, backend='loky', max_nbytes=None)(
-        delayed(_process_chunk)(points, tree, start, end, radius, min_pts, max_pts)
-        for start, end in chunks
+    # ============================================
+    # STEP 1: Batch query all neighborhoods
+    # ============================================
+    neighbors = []
+    if verbose:
+        pbar = tqdm(range(0, n_points, chunk), total=len(list(range(0, n_points, chunk))), desc="Querying neighborhoods", leave=False, position=1)
+    else:
+        pbar = range(0, n_points, chunk)
+    
+    for i in pbar:
+        end_idx = min(i + chunk, n_points)
+        batch_points = points[i:end_idx]
+        batch_neighbors = tree.query_ball_point(batch_points, radius)
+        neighbors.extend(batch_neighbors)
+
+    neighbors = np.asarray(neighbors, dtype=object)
+    
+    # ============================================
+    # STEP 2: Filter by density requirement
+    # ============================================
+    dense_indices = [i for i in range(n_points) if len(neighbors[i]) >= min_pts]
+    
+    if len(dense_indices) == 0:
+        return [], []
+    
+    # ============================================
+    # STEP 3: Build superpoints from dense points
+    # ============================================
+    visited = np.zeros(n_points, dtype=np.int32)
+    superpoints = []
+    seed_indices = []
+    
+    if verbose:
+        pbar = tqdm(dense_indices, desc="Building superpoints", total=len(dense_indices), leave=False, position=1)
+    else:
+        pbar = dense_indices
+
+    for i in pbar:
+        if visited[i] >= max_visits:
+            continue
+        
+        idx = neighbors[i]
+        if len(idx) < min_pts:
+            continue
+        idx = np.array(idx, dtype=np.int32)
+        
+        valid_mask = visited[idx] < max_visits
+        idx = idx[valid_mask]
+
+        if len(idx) > max_pts:
+            idx = np.random.choice(idx, size=max_pts, replace=False)
+        else:
+            idx = np.array(idx, dtype=np.int32)
+        
+        if len(idx) < min_pts:
+            continue
+        
+        visited[idx] += 1
+        superpoints.append(idx)
+        seed_indices.append(i)
+    
+    return superpoints, seed_indices
+
+
+def _process_point_worker(i, neighbors_data, shm_visited_name, n_points, min_pts, max_pts, max_visits):
+    """Worker function - optimized."""
+    shm_visited = shared_memory.SharedMemory(name=shm_visited_name)
+    visited = np.ndarray(n_points, dtype=np.int32, buffer=shm_visited.buf)
+    
+    try:
+        # Early exits
+        if visited[i] >= max_visits or len(neighbors_data) < min_pts:
+            return None, None
+        
+        idx = np.array(neighbors_data, dtype=np.int32)
+        
+        # Filter by visit count
+        idx = idx[visited[idx] < max_visits]
+        
+        if len(idx) < min_pts:
+            return None, None
+        
+        # Downsample if needed
+        if len(idx) > max_pts:
+            idx = np.random.choice(idx, size=max_pts, replace=False)
+        
+        # Update visited count (vectorized)
+        with lock:
+            visited[idx] += 1
+        
+        return idx, i  # Return numpy array, not list
+    finally:
+        shm_visited.close()
+
+
+def build_superpoints_mp(points: np.ndarray,
+                      chunk: int = 500,
+                      radius: float = 0.2,
+                      min_pts: int = 30,
+                      max_pts: int = 300,
+                      max_visits: int = 5,
+                      verbose: bool = False,
+                      n_jobs: int = -1):
+    """
+    Parallel version - optimized.
+    """
+    n_points = len(points)
+    tree = cKDTree(points)
+    
+    # ============================================
+    # STEP 1: Build neighbors array
+    # ============================================
+    voxel_size = radius * 0.5 
+
+    coords = (points / voxel_size).astype(np.int32)
+    unique_voxels, inverse_indices = np.unique(coords, axis=0, return_inverse=True)
+    n_unique_voxels = len(unique_voxels)
+    voxel_sums = np.zeros((n_unique_voxels, 3), dtype=np.float32)
+    np.add.at(voxel_sums, inverse_indices, points)
+    
+    counts = np.bincount(inverse_indices, minlength=n_unique_voxels)
+    voxel_centroids = voxel_sums / counts[:, None]
+
+    neighbors = []
+    if verbose:
+        pbar = tqdm(range(0, n_unique_voxels, chunk), desc="Querying neighborhoods", leave=False, position=1)
+    else:
+        pbar = range(0, n_unique_voxels, chunk)
+
+    for i in pbar:
+        end_idx = min(i + chunk, n_unique_voxels)
+        batch_neighbors = tree.query_ball_point(voxel_centroids[i:end_idx], radius)
+        neighbors.extend(batch_neighbors)
+    
+    # ============================================
+    # STEP 2: Filter by density
+    # ============================================
+    dense_indices = [i for i in range(n_unique_voxels) if len(neighbors[i]) >= min_pts]
+    
+    if len(dense_indices) == 0:
+        return [], []
+    
+    # ============================================
+    # STEP 3: Create shared memory
+    # ============================================
+    shm_visited = shared_memory.SharedMemory(
+        create=True, 
+        size=n_points * np.dtype(np.int32).itemsize
     )
+    visited = np.ndarray(n_points, dtype=np.int32, buffer=shm_visited.buf)
+    visited[:] = 0
     
-    all_superpoints = []
-    for chunk_sps in results:
-        all_superpoints.extend(chunk_sps)
+    try:
+        # ============================================
+        # STEP 4: Process in parallel
+        # ============================================
+        results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
+            delayed(_process_point_worker)(
+                i, 
+                neighbors[i],
+                shm_visited.name,
+                n_points, 
+                min_pts, 
+                max_pts, 
+                max_visits
+            )
+            for i in (tqdm(dense_indices, desc="Building superpoints", leave=False, position=1) if verbose else dense_indices)
+        )
+        
+        # ============================================
+        # STEP 5: Collect results (no extra iteration)
+        # ============================================
+        superpoints = []
+        seed_indices = []
+        
+        for sp, seed in results:
+            if sp is not None:
+                superpoints.append(sp)  # Already numpy array
+                seed_indices.append(seed)
+        
+        return superpoints, seed_indices
     
-    all_superpoints.sort(key=lambda x: x[0])
-    
-    global_visited = set()
-    final_superpoints = []
-    for seed_idx, idx in all_superpoints:
-        idx_set = set(idx)
-        if not idx_set.intersection(global_visited):
-            global_visited.update(idx_set)
-            final_superpoints.append(idx)
-    
-    return final_superpoints
+    finally:
+        visited = None
+        shm_visited.close()
+        shm_visited.unlink()
+        gc.collect()

@@ -311,9 +311,9 @@ def main():
             points,
             tree_ids,
             cut_dir,
-            min_trees_per_window=6,
-            max_trees_per_window=10,
-            overlap_trees=3,
+            min_trees_per_window=4,
+            max_trees_per_window=6,
+            overlap_trees=2,
             max_radius=None,  # Auto-compute
         )
 

@@ -14,6 +14,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 from joblib import Parallel, delayed, cpu_count
 from typing import List, Tuple
+from tqdm import tqdm
 
 try:
     import cupy as cp
@@ -461,9 +462,9 @@ def build_edges_tree_aware_hybrid(
     
     return edges
 
-def build_edges(centroids, radius: Union[float, list] = 1.5):
+def build_edges(centroids, chunk = 500, radius: float = 1.5, verbose = False):
     if len(centroids) == 0:
-        return []
+        return np.empty((0, 3), dtype=np.int64)
     
     centroids = np.asarray(centroids)
     if centroids.ndim != 2 or centroids.shape[1] != 3:
@@ -471,25 +472,46 @@ def build_edges(centroids, radius: Union[float, list] = 1.5):
     
     tree = cKDTree(centroids)
     edges = []
-    
-    if isinstance(radius, list):
-        for rad in radius:
-            for i, c in enumerate(centroids):
-                neighbors = tree.query_ball_point(c, rad)
-                for j in neighbors:
-                    if i < j:
-                        edges.append((i, j))
+
+    neighbors = []
+    if verbose:
+        pbar = tqdm(range(0, centroids.shape[0], chunk), total=centroids.shape[0]//chunk + 1, desc="Building spatial index", position = 1, leave=False)
     else:
-        for i, c in enumerate(centroids):
-            neighbors = tree.query_ball_point(c, radius)
-            for j in neighbors:
-                if i < j:
-                    edges.append((i, j))
-    
+        pbar = range(0, centroids.shape[0], chunk)
+
+    for i in pbar:
+        end_idx = min(i + chunk, centroids.shape[0])
+        batch_neighbors = tree.query_ball_point(centroids[i:end_idx], radius)
+        neighbors.extend(batch_neighbors)
+    neighbors = np.asarray(neighbors, dtype=object)
+
+    del tree
+
+    edges = []
+
+    if verbose:
+        pbar = tqdm(range(len(neighbors)), total=len(neighbors), desc="Building edges", position = 1, leave= False)
+    else:
+        pbar = range(len(neighbors))
+
+    for i, nbrs in pbar:
+        for j in nbrs:
+            if i < j:
+                edges.append((i, j))
+
     # Remove duplicates and sort
     edges = list(set(edges))
     edges.sort()
-    return edges
+    return np.asarray(edges, np.int64)
+
+def build_edges_sp(centroids: np.ndarray, radius:float = 1.5):
+
+
+    tree = cKDTree(centroids)
+
+    edges = tree.query_pairs(radius, output_type='ndarray')
+
+    return edges.astype(np.int64)
 
 
 
@@ -508,9 +530,8 @@ def _process_chunk_edges(centroids, start_idx, end_idx, radius):
 
 def build_edges_mp(centroids, radius: Union[float, list] = 1.5, n_jobs=-1):
     if len(centroids) == 0:
-        return []
-    
-    centroids = np.asarray(centroids)
+        return np.empty((0, 3), dtype=np.int64)
+
     if centroids.ndim != 2 or centroids.shape[1] != 3:
         raise ValueError(f"Expected centroids to be 2D array with 3 columns, got shape {centroids.shape}")
     
@@ -545,4 +566,9 @@ def build_edges_mp(centroids, radius: Union[float, list] = 1.5, n_jobs=-1):
     all_edges = list(set(all_edges))
     all_edges.sort()
     
-    return all_edges
+    return np.asarray(all_edges, dtype=np.int64)
+
+def edge_labels_binary(edges, sp_tree_ids):
+    i = edges[:, 0]
+    j = edges[:, 1]
+    return (sp_tree_ids[i] == sp_tree_ids[j]).astype(np.float32)

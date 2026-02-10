@@ -2,18 +2,19 @@ import numpy as np
 import sys
 import pathlib as pth
 from tqdm import tqdm
+import gc
 
 src_dir = pth.Path(__file__).parent.parent
 sys.path.append(str(src_dir))
 
 from utils.superpoints import build_superpoints, build_superpoints_mp
 from utils.features import superpoint_features
-from utils.graph import build_edges, build_edges_mp, build_edges_tree_aware, build_edges_tree_aware_hybrid
-from utils.edge_features import edge_features
+from utils.graph import build_edges_sp, build_edges, edge_labels_binary
+from utils.edge_features import edge_features, edge_features_vectorized
 from utils.structures import SuperPoint
 
 
-def preprocess_cloud_to_edges(cloud_path, output_path, radius: float = 1.5, use_mp=True, verbose=False, n_jobs=-1):
+def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, radius: float = 1.5, verbose=False):
     """
     Process a single point cloud file and save edge features + labels.
     
@@ -22,80 +23,85 @@ def preprocess_cloud_to_edges(cloud_path, output_path, radius: float = 1.5, use_
         output_path: Path to output .npy file with edge features + labels
         use_mp: Use multiprocessing for superpoint building
         verbose: Show progress
-        n_jobs: Number of jobs for multiprocessing (default -1 = all CPUs)
     """
     cloud = np.load(cloud_path)
     xyz = cloud[:, :3]
     tree_ids = cloud[:, -1].astype(np.int32)
-    
-    # Build superpoints
-    if use_mp:
-        sp_indices = build_superpoints_mp(xyz)
+    del cloud
+
+    if use_mp and xyz.shape[0] > 200000:
+        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.4, max_visits=2, verbose=True, n_jobs=12)
     else:
-        sp_indices = list(build_superpoints(xyz))
+        sp_indices, _ = build_superpoints(xyz, chunk=1000, radius=0.4, max_visits=2, verbose=True) 
     
-    if not sp_indices:
+    if len(sp_indices) == 0:
         np.save(output_path, np.empty((0, 9), dtype=np.float32))
         return
     
     # Extract superpoint features and tree_ids
     n_sp = len(sp_indices)
     sp_tree_ids = np.empty(n_sp, dtype=np.int32)
-    superpoints = []
-    
+
+    centroid_array = np.zeros((n_sp, 3), dtype=np.float32)
+    pca_dir_array = np.zeros((n_sp, 3), dtype=np.float32)
+    thickness_array = np.zeros(n_sp, dtype=np.float32)
+    verticality_array = np.zeros(n_sp, dtype=np.float32)
+    bbox_radius_array = np.zeros(n_sp, dtype=np.float32)
+    height_extent_array = np.zeros(n_sp, dtype=np.float32)
+
     iterator = enumerate(sp_indices)
     if verbose:
-        iterator = tqdm(iterator, total=n_sp, desc="Extracting SP features", leave=False)
-    
+        iterator = tqdm(iterator, total=n_sp, desc="Extracting SP features", leave=False, position=4)
+
     for i, idx in iterator:
         idx = np.array(idx, dtype=int)
         centroid, pca_dir, thickness, verticality, bbox_radius = superpoint_features(xyz, idx)
         
         sp_tree_ids[i] = np.bincount(tree_ids[idx]).argmax()
-        superpoints.append(SuperPoint(
-            id=i,
-            centroid=centroid,
-            pca_dir=pca_dir,
-            thickness=thickness,
-            verticality=verticality,
-            n_points=len(idx),
-            bbox_radius=bbox_radius,
-            chunk_id=0,
-            height_extent=xyz[idx, 2].max() - xyz[idx, 2].min()
-        ))
-    
-    if use_mp and n_sp > 1000:
-        n_jobs_edges = 1
-    else:
-        n_jobs_edges = n_jobs
-    edges = build_edges_tree_aware(superpoints=superpoints, n_jobs=n_jobs_edges, use_gpu=True)
-    # edges = build_edges_tree_aware_hybrid(superpoints, batch_size=5000)
 
+        centroid_array[i] = centroid
+        pca_dir_array[i] = pca_dir
+        thickness_array[i] = thickness
+        verticality_array[i] = verticality
+        bbox_radius_array[i] = bbox_radius
+        height_extent_array[i] = xyz[idx, 2].max() - xyz[idx, 2].min()
+
+
+
+    if centroid_array.shape[0] > 1000000:
+        edges = build_edges(centroids=centroid_array, chunk=1000, radius=radius)
+    else:
+        edges = build_edges_sp(centroids=centroid_array, radius=radius)
     
-    if not edges:
+    if edges.shape[0] == 0:
         np.save(output_path, np.empty((0, 9), dtype=np.float32))
         return
     
     # Extract edge features and labels
     n_edges = len(edges)
-    edge_data = np.empty((n_edges, 9), dtype=np.float32)
+
+    features = edge_features_vectorized(edges=edges,
+                                    centroid=centroid_array,
+                                    pca_dir=pca_dir_array,
+                                    thickness=thickness_array,
+                                    verticality=verticality_array,
+                                    n_points=np.array([len(idx) for idx in sp_indices]),
+                                    height_extent=height_extent_array)
     
-    iterator = enumerate(edges)
-    if verbose:
-        iterator = tqdm(iterator, total=n_edges, desc="Computing edge features", leave=False)
+    del centroid_array, pca_dir_array, thickness_array, verticality_array, sp_indices, height_extent_array
     
-    for idx, (i, j) in iterator:
-        feat = edge_features(superpoints[i], superpoints[j])
-        label = float(sp_tree_ids[i] == sp_tree_ids[j])
-        edge_data[idx] = np.append(feat, label)
+    edge_labels = edge_labels_binary(edges, sp_tree_ids)
+    del sp_tree_ids, edges
+
+    edge_data = np.concatenate([features, edge_labels.reshape(-1, 1)], axis=1)    
+    del features, edge_labels
 
     np.save(output_path, edge_data)
-    
-    if verbose:
-        print(f"Saved {n_edges} edges to {output_path}")
+
+    gc.collect()
 
 
-def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, verbose=True, n_jobs=-1):
+def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, verbose=True):
     """
     Preprocess all .npy files in input_dir and save edge features to output_dir.
     """
@@ -109,7 +115,7 @@ def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, 
         print(f"Found {len(npy_files)} files to process")
     
     if verbose:
-        pbar = tqdm(npy_files, desc="Processing files")
+        pbar = tqdm(npy_files, desc="Processing files", position=0)
     else:
         pbar = npy_files
     for npy_file in pbar:
@@ -128,9 +134,7 @@ def main():
             input_dir=f'data/split/{split}',
             output_dir=f'data/edges/{split}',
             radius=1.5,
-            use_mp=True,
             verbose=True,
-            n_jobs=-1
         )
 
 
