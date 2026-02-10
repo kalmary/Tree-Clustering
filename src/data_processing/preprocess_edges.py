@@ -29,7 +29,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
     tree_ids = cloud[:, -1].astype(np.int32)
     del cloud
 
-    sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.4, max_visits=2, verbose=True, n_jobs=12)
+    sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.3, max_visits=-1, verbose=True, n_jobs=12)
 
     if len(sp_indices) == 0:
         np.save(output_path, np.empty((0, 9), dtype=np.float32))
