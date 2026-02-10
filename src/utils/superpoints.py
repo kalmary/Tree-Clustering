@@ -85,36 +85,48 @@ def build_superpoints(points: np.ndarray,
     return superpoints, seed_indices
 
 
-def _process_point_worker(i, neighbors_data, shm_visited_name, n_points, min_pts, max_pts, max_visits):
+def _process_point_worker(i, neighbors_data, shm_visited_name, n_points, min_pts, max_pts, max_visits, lock = None):
     """Worker function - optimized."""
-    shm_visited = shared_memory.SharedMemory(name=shm_visited_name)
-    visited = np.ndarray(n_points, dtype=np.int32, buffer=shm_visited.buf)
-    lock = Lock()  # For thread-safe updates
+    # Early exit for insufficient neighbors
+    if len(neighbors_data) < min_pts:
+        return None, None
     
-    try:
-        # Early exits
-        if visited[i] >= max_visits or len(neighbors_data) < min_pts:
-            return None, None
+    idx = np.array(neighbors_data, dtype=np.int32)
+    
+    # Handle max_visits logic only if max_visits != -1
+    if max_visits != -1:
+        shm_visited = shared_memory.SharedMemory(name=shm_visited_name)
+        visited = np.ndarray(n_points, dtype=np.int32, buffer=shm_visited.buf)
         
-        idx = np.array(neighbors_data, dtype=np.int32)
-        
-        # Filter by visit count
-        idx = idx[visited[idx] < max_visits]
-        
-        if len(idx) < min_pts:
-            return None, None
-        
-        # Downsample if needed
+        try:
+            # Early exit if seed point has been visited too many times
+            if visited[i] >= max_visits:
+                return None, None
+            
+            # Filter by visit count
+            idx = idx[visited[idx] < max_visits]
+            
+            if len(idx) < min_pts:
+                return None, None
+            
+            # Downsample if needed
+            if len(idx) > max_pts:
+                idx = np.random.choice(idx, size=max_pts, replace=False)
+            
+            # Update visited count (vectorized)
+            if lock is not None:
+                with lock:
+                    visited[idx] += 1
+            
+            return idx, i  # Return numpy array, not list
+        finally:
+            shm_visited.close()
+    else:
+        # No visit tracking - just downsample if needed
         if len(idx) > max_pts:
             idx = np.random.choice(idx, size=max_pts, replace=False)
         
-        # Update visited count (vectorized)
-        with lock:
-            visited[idx] += 1
-        
-        return idx, i  # Return numpy array, not list
-    finally:
-        shm_visited.close()
+        return idx, i
 
 
 def build_superpoints_mp(points: np.ndarray,
@@ -165,28 +177,36 @@ def build_superpoints_mp(points: np.ndarray,
         return [], []
     
     # ============================================
-    # STEP 3: Create shared memory
+    # STEP 3: Create shared memory (only if max_visits != -1)
     # ============================================
-    shm_visited = shared_memory.SharedMemory(
-        create=True, 
-        size=n_points * np.dtype(np.int32).itemsize
-    )
-    visited = np.ndarray(n_points, dtype=np.int32, buffer=shm_visited.buf)
-    visited[:] = 0
+    shm_visited = None
+    visited = None
+    lock = None
+    if max_visits != -1:
+        shm_visited = shared_memory.SharedMemory(
+            create=True, 
+            size=n_points * np.dtype(np.int32).itemsize
+        )
+        visited = np.ndarray(n_points, dtype=np.int32, buffer=shm_visited.buf)
+        visited[:] = 0
+        lock = Lock()
     
     try:
         # ============================================
         # STEP 4: Process in parallel
         # ============================================
+        shm_name = shm_visited.name if max_visits != -1 else None
+        
         results = Parallel(n_jobs=n_jobs, backend='multiprocessing')(
             delayed(_process_point_worker)(
                 i, 
                 neighbors[i],
-                shm_visited.name,
+                shm_name,
                 n_points, 
                 min_pts, 
                 max_pts, 
-                max_visits
+                max_visits,
+                lock
             )
             for i in (tqdm(dense_indices, desc="Building superpoints", leave=False, position=1) if verbose else dense_indices)
         )
@@ -206,6 +226,7 @@ def build_superpoints_mp(points: np.ndarray,
     
     finally:
         visited = None
-        shm_visited.close()
-        shm_visited.unlink()
+        if max_visits != -1 and shm_visited is not None:
+            shm_visited.close()
+            shm_visited.unlink()
         gc.collect()
