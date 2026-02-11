@@ -280,7 +280,7 @@ def split_paths(cut_dir: Path, split_dir: Path):
         npy_paths, test_size=0.3, random_state=42
     )
     val_paths, test_paths = train_test_split(
-        temp_paths, test_size=0.3, random_state=42
+        temp_paths, test_size=0.7, random_state=42
     )
 
     for split_name, paths in [

@@ -132,21 +132,26 @@ def _process_point_worker(i, neighbors_data, shm_visited_name, n_points, min_pts
 def build_superpoints_mp(points: np.ndarray,
                       chunk: int = 500,
                       radius: float = 0.2,
+                      voxel_factor: float = 0.7,
                       min_pts: int = 30,
                       max_pts: int = 300,
-                      max_visits: int = 5,
+                      max_visits: int = -1,
                       verbose: bool = False,
                       n_jobs: int = -1):
     """
     Parallel version - optimized.
     """
+    if n_jobs == -1:
+        from joblib import cpu_count
+        n_jobs = cpu_count()
+
     n_points = len(points)
     tree = cKDTree(points)
     
     # ============================================
     # STEP 1: Build neighbors array
     # ============================================
-    voxel_size = radius * 0.5 
+    voxel_size = radius * voxel_factor 
 
     coords = (points / voxel_size).astype(np.int32)
     unique_voxels, inverse_indices = np.unique(coords, axis=0, return_inverse=True)
