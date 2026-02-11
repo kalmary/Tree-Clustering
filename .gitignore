@@ -167,3 +167,4 @@ cython_debug/
 **/edges/train/
 **/edges/test/
 **/edges/val/
+**/ego_graphs/
