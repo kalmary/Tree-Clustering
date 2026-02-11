@@ -577,7 +577,7 @@ def objective_function(trial: optuna.Trial,
 
 
         normalized_loss = 1 / (1 + best_val_loss)
-        final_val = 0.9 * best_val_f1 + 0.1 * normalized_loss
+        final_val = 0.95 * best_val_f1 + 0.05 * normalized_loss
 
         checkpoint.check_checkpoint(model,
                                     model_name,
@@ -658,11 +658,11 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
     best_params = best_trial.params
     best_value = best_trial.value
 
-    logger.info(f'Optimization finished. Best value of formula: 0.9 * val_acc + 0.1 * norm_val_loss: {best_value:.4f}')
+    logger.info(f'Optimization finished. Best value of formula: 0.95 * val_acc + 0.05 * norm_val_loss: {best_value:.4f}')
 
     print(20*'=')
     print(f'Optuna optimalization finished')
-    print(f'Best value of 0.9 * val_f1 + 0.1 * norm_val_loss: {best_value:.4f}')
+    print(f'Best value of 0.95 * val_f1 + 0.05 * norm_val_loss: {best_value:.4f}')
     pprint(f'Best trial params:\n{best_params}')
     print(20*'=')
 

@@ -3,6 +3,8 @@ import sys
 import pathlib as pth
 from tqdm import tqdm
 import gc
+import torch
+from torch_geometric.utils import to_undirected
 
 src_dir = pth.Path(__file__).parent.parent
 sys.path.append(str(src_dir))
@@ -28,11 +30,12 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
     xyz = cloud[:, :3]
     tree_ids = cloud[:, -1].astype(np.int32)
     del cloud
-
-    sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.3, max_visits=-1, verbose=True, n_jobs=12)
+    if use_mp:
+        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.3, max_visits=-1, verbose=True, n_jobs=-1)
+    else:
+        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.3, max_visits=-1, verbose=True, n_jobs=0)
 
     if len(sp_indices) == 0:
-        np.save(output_path, np.empty((0, 9), dtype=np.float32))
         return
     
     # Extract superpoint features and tree_ids
@@ -43,8 +46,9 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
     pca_dir_array = np.zeros((n_sp, 3), dtype=np.float32)
     thickness_array = np.zeros(n_sp, dtype=np.float32)
     verticality_array = np.zeros(n_sp, dtype=np.float32)
-    bbox_radius_array = np.zeros(n_sp, dtype=np.float32)
-    height_extent_array = np.zeros(n_sp, dtype=np.float32)
+    linearity_array = np.zeros(n_sp, dtype=np.float32)
+    planarity_array = np.zeros(n_sp, dtype=np.float32)
+    scattering_array = np.zeros(n_sp, dtype=np.float32)
 
     iterator = enumerate(sp_indices)
     if verbose:
@@ -52,7 +56,8 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
 
     for i, idx in iterator:
         idx = np.array(idx, dtype=int)
-        centroid, pca_dir, thickness, verticality, bbox_radius = superpoint_features(xyz, idx)
+        centroid, pca_dir, thickness, verticality, linearity, planarity, scattering = superpoint_features(xyz, idx)
+        
         
         sp_tree_ids[i] = np.bincount(tree_ids[idx]).argmax()
 
@@ -60,45 +65,64 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
         pca_dir_array[i] = pca_dir
         thickness_array[i] = thickness
         verticality_array[i] = verticality
-        bbox_radius_array[i] = bbox_radius
-        height_extent_array[i] = xyz[idx, 2].max() - xyz[idx, 2].min()
-
+        linearity_array[i] = linearity
+        planarity_array[i] = planarity
+        scattering_array[i] = scattering
 
 
     if centroid_array.shape[0] > 1000000:
-        edges = build_edges(centroids=centroid_array, chunk=1000, radius=radius)
+        edges = build_edges(centroids=centroid_array, chunk=1000, radius=radius, verbose=verbose)
     else:
         edges = build_edges_sp(centroids=centroid_array, radius=radius)
     
     if edges.shape[0] == 0:
-        np.save(output_path, np.empty((0, 9), dtype=np.float32))
         return
     
     # Extract edge features and labels
     n_edges = len(edges)
 
-    features = edge_features_vectorized(edges=edges,
-                                    centroid=centroid_array,
-                                    pca_dir=pca_dir_array,
-                                    thickness=thickness_array,
-                                    verticality=verticality_array,
-                                    n_points=np.array([len(idx) for idx in sp_indices]),
-                                    height_extent=height_extent_array)
-    
-    del centroid_array, pca_dir_array, thickness_array, verticality_array, sp_indices, height_extent_array
-    
+    edge_features = edge_features_vectorized(edges,
+                                        centroid_array, pca_dir_array,
+                                        thickness_array, verticality_array,
+                                        linearity_array, planarity_array,
+                                        scattering_array,
+                                        eps=1e-8)
+    node_features = np.stack([
+        thickness_array,
+        verticality_array,
+        linearity_array,
+        planarity_array,
+        scattering_array,
+        centroid_array[:, 2],  # The Z-coordinate (height)
+        np.array([len(idx) for idx in sp_indices]) # Density/Point count
+    ], axis=1)
+    node_features = torch.tensor(node_features, dtype=torch.float32)
+
+    edge_index_raw = torch.tensor(edges.T, dtype=torch.long)
+    edge_features = torch.tensor(edge_features, dtype=torch.float32)
     edge_labels = edge_labels_binary(edges, sp_tree_ids)
-    del sp_tree_ids, edges
+    edge_labels = torch.tensor(edge_labels, dtype=torch.long)
 
-    edge_data = np.concatenate([features, edge_labels.reshape(-1, 1)], axis=1)    
-    del features, edge_labels
+    edge_index, [edge_features, edge_labels] = to_undirected(
+    edge_index_raw, 
+    [edge_features, edge_labels]
+    )
 
-    np.save(output_path, edge_data)
+    
+    graph_data = {
+        'x': node_features,
+        'edge_index': edge_index,
+        'edge_attr': edge_features,
+        'y': edge_labels,
+        'pos': torch.tensor(centroid_array), # Keep centroids separate for spatial queries
+        'num_nodes': node_features.size(0)
+    }
+    torch.save(graph_data, output_path)
 
     gc.collect()
 
 
-def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, verbose=True):
+def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, verbose: bool = True):
     """
     Preprocess all .npy files in input_dir and save edge features to output_dir.
     """
@@ -117,7 +141,7 @@ def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, use_mp=True, 
         pbar = npy_files
     for npy_file in pbar:
         relative_path = npy_file.relative_to(input_path)
-        out_file = output_path / relative_path
+        out_file = (output_path / relative_path).with_suffix('.pt')
         out_file.parent.mkdir(parents=True, exist_ok=True)
         
         preprocess_cloud_to_edges(npy_file, out_file, radius=radius, use_mp=use_mp, verbose=False)
