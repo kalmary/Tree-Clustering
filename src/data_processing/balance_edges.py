@@ -1,460 +1,554 @@
+import torch
 import numpy as np
 from pathlib import Path
-from typing import Union, Optional, List, Tuple
+from typing import Union, Optional, Tuple
+from tqdm import tqdm
+from dataclasses import dataclass, field
 
 
-def check_file_variance(
-    file_path: Path,
-    label_col: int = -1,
-    imbalance_threshold: float = 0.95
-) -> dict:
-    """
-    Check if a single file has class variance issues.
-    
-    Args:
-        file_path: Path to .npy file
-        label_col: Column index containing labels
-        imbalance_threshold: Threshold for considering a file highly imbalanced
-    
-    Returns:
-        dict with file statistics and flags
-    """
-    try:
-        data = np.load(file_path)
-        
-        if data.ndim != 2 or data.shape[1] != 9:
-            return {
-                'valid': False,
-                'error': f'Invalid shape: expected (n, 9), got {data.shape}'
-            }
-        
-        labels = data[:, label_col].astype(int)
-        n_samples = len(labels)
-        
-        class_0_count = np.sum(labels == 0)
-        class_1_count = np.sum(labels == 1)
-        
-        class_0_pct = class_0_count / n_samples if n_samples > 0 else 0
-        class_1_pct = class_1_count / n_samples if n_samples > 0 else 0
-        
-        return {
-            'valid': True,
-            'path': file_path,
-            'data': data,
-            'labels': labels,
-            'n_samples': n_samples,
-            'class_0_count': class_0_count,
-            'class_1_count': class_1_count,
-            'class_0_pct': class_0_pct,
-            'class_1_pct': class_1_pct,
-            'only_class_0': class_1_count == 0,
-            'only_class_1': class_0_count == 0,
-            'highly_imbalanced': class_0_pct > imbalance_threshold or class_1_pct > imbalance_threshold,
-            'single_class': class_0_count == 0 or class_1_count == 0
-        }
-    
-    except Exception as e:
-        return {
-            'valid': False,
-            'error': str(e)
-        }
+@dataclass
+class BalancingStats:
+    """Accumulated statistics for the balancing operation."""
+    files_processed: int = 0
+    files_modified: int = 0
+    files_removed: int = 0
+    edges_removed: int = 0  # Changed from samples_removed
+    single_class_files_removed: int = 0
+    single_class_files_merged: int = 0
+    highly_imbalanced_count: int = 0
+    original_counts: dict = field(default_factory=lambda: {0: 0, 1: 0})
+    final_counts: dict = field(default_factory=lambda: {0: 0, 1: 0})
+    removed_per_file: list = field(default_factory=list)
 
 
-def merge_single_class_files(
-    single_class_files: List[dict],
-    target_class: int,
-    max_samples_per_merged: int = 5000
-) -> List[np.ndarray]:
+def get_unique_edges_mask(edge_index: torch.Tensor) -> torch.Tensor:
     """
-    Merge multiple single-class files into larger mixed batches.
-    
-    Args:
-        single_class_files: List of file info dicts for single-class files
-        target_class: The class these files contain (0 or 1)
-        max_samples_per_merged: Maximum samples per merged file
-    
-    Returns:
-        List of merged data arrays
+    For an undirected graph, get mask for unique edges (where source <= target).
+    This avoids counting each edge twice.
     """
-    merged_files = []
-    current_batch = []
-    current_size = 0
+    return edge_index[0] <= edge_index[1]
+
+
+def find_edge_pairs(edge_index: torch.Tensor, unique_indices: torch.Tensor) -> torch.Tensor:
+    """
+    For each unique edge index, find its corresponding reverse edge index.
+    Returns tensor of shape (len(unique_indices), 2) where [:, 0] is forward, [:, 1] is reverse.
+    """
+    pairs = []
     
-    for file_info in single_class_files:
-        data = file_info['data']
+    for idx in unique_indices:
+        u, v = edge_index[0, idx].item(), edge_index[1, idx].item()
         
-        if current_size + len(data) <= max_samples_per_merged:
-            current_batch.append(data)
-            current_size += len(data)
+        # Find reverse edge (v, u)
+        if u == v:
+            # Self-loop, no reverse
+            pairs.append([idx, idx])
         else:
-            if current_batch:
-                merged_files.append(np.vstack(current_batch))
-            current_batch = [data]
-            current_size = len(data)
+            reverse_mask = (edge_index[0] == v) & (edge_index[1] == u)
+            reverse_idx = torch.where(reverse_mask)[0]
+            
+            if len(reverse_idx) > 0:
+                pairs.append([idx, reverse_idx[0].item()])
+            else:
+                # No reverse found (shouldn't happen for undirected graphs)
+                pairs.append([idx, idx])
     
-    # Add remaining batch
-    if current_batch:
-        merged_files.append(np.vstack(current_batch))
-    
-    return merged_files
+    return torch.tensor(pairs, dtype=torch.long)
 
 
-def balance_edge_files(
+def balance_graph_data(
+    graph_data: dict,
+    target_ratio: float,
+    majority_class: int,
+    minority_class: int,
+    min_edges_per_file: int,
+    remove_isolated_nodes: bool = True
+) -> Tuple[Optional[dict], int, int, int]:
+    """
+    Balance a single graph by removing majority class edges.
+    
+    Returns:
+        (balanced_graph_data or None, edges_removed, new_class_0_count, new_class_1_count)
+    """
+    edge_index = graph_data['edge_index']
+    edge_attr = graph_data['edge_attr']
+    edge_labels = graph_data['y']
+    node_features = graph_data['x']
+    pos = graph_data['pos']
+    
+    # Get unique edges (to avoid double-counting in undirected graph)
+    unique_mask = get_unique_edges_mask(edge_index)
+    unique_indices = torch.where(unique_mask)[0]
+    unique_labels = edge_labels[unique_indices]
+    
+    # Count classes on unique edges
+    majority_count = (unique_labels == majority_class).sum().item()
+    minority_count = (unique_labels == minority_class).sum().item()
+    
+    if majority_count == 0:
+        return None, 0, 0, 0
+    
+    # Calculate target
+    target_majority = int(minority_count * target_ratio)
+    target_majority = max(target_majority, 1) if minority_count > 0 else 0
+    
+    if target_majority >= majority_count:
+        # Already balanced
+        return graph_data, 0, minority_count if minority_class == 0 else majority_count, \
+               majority_count if minority_class == 1 else minority_count
+    
+    edges_to_remove = majority_count - target_majority
+    
+    # Separate unique edges by class
+    majority_unique_mask = unique_labels == majority_class
+    minority_unique_mask = unique_labels == minority_class
+    
+    majority_unique_indices = unique_indices[majority_unique_mask]
+    minority_unique_indices = unique_indices[minority_unique_mask]
+    
+    # Randomly select majority edges to keep
+    torch.manual_seed(42)
+    perm = torch.randperm(len(majority_unique_indices))
+    keep_majority_unique_indices = majority_unique_indices[perm[:target_majority]]
+    
+    # Combine with all minority edges
+    keep_unique_indices = torch.cat([minority_unique_indices, keep_majority_unique_indices])
+    
+    # Find edge pairs (forward and reverse) for kept edges
+    edge_pairs = find_edge_pairs(edge_index, keep_unique_indices)
+    
+    # Flatten to get all indices to keep (both directions)
+    keep_all_indices = edge_pairs.flatten().unique()
+    
+    # Check if resulting graph would be too small
+    if len(keep_all_indices) < min_edges_per_file:
+        return None, majority_count, 0, 0
+    
+    # Slice edges
+    new_edge_index = edge_index[:, keep_all_indices]
+    new_edge_attr = edge_attr[keep_all_indices]
+    new_edge_labels = edge_labels[keep_all_indices]
+    
+    # Optionally remove isolated nodes and reindex
+    if remove_isolated_nodes:
+        # Find unique nodes in the new edge index
+        unique_nodes = new_edge_index.unique()
+        num_new_nodes = len(unique_nodes)
+        
+        # Create mapping from old to new indices
+        node_mapping = torch.full((node_features.size(0),), -1, dtype=torch.long)
+        node_mapping[unique_nodes] = torch.arange(num_new_nodes)
+        
+        # Reindex edges
+        new_edge_index = node_mapping[new_edge_index]
+        
+        # Slice node features and positions
+        new_node_features = node_features[unique_nodes]
+        new_pos = pos[unique_nodes]
+    else:
+        new_node_features = node_features
+        new_pos = pos
+        num_new_nodes = node_features.size(0)
+    
+    # Create new graph
+    new_graph = {
+        'x': new_node_features,
+        'edge_index': new_edge_index,
+        'edge_attr': new_edge_attr,
+        'y': new_edge_labels,
+        'pos': new_pos,
+        'num_nodes': num_new_nodes
+    }
+    
+    # Calculate final counts (on unique edges)
+    final_unique_mask = get_unique_edges_mask(new_edge_index)
+    final_unique_labels = new_edge_labels[final_unique_mask]
+    final_class_0 = (final_unique_labels == 0).sum().item()
+    final_class_1 = (final_unique_labels == 1).sum().item()
+    
+    return new_graph, edges_to_remove, final_class_0, final_class_1
+
+
+def balance_graph_files(
     edges_dir: Union[str, Path],
     target_ratio: float = 1.0,
     split: str = 'train',
-    label_col: int = -1,
-    min_samples_per_file: int = 100,
+    min_edges_per_file: int = 100,
     dry_run: bool = False,
     backup: bool = True,
     verbose: bool = True,
-    handle_single_class: str = 'remove',  # 'remove', 'merge', or 'keep'
-    imbalance_threshold: float = 0.95
+    handle_single_class: str = 'remove',
+    imbalance_threshold: float = 0.95,
+    remove_isolated_nodes: bool = True
 ) -> dict:
     """
-    Balance extremely imbalanced binary labeled data in .npy files.
-    
-    Strategy:
-    1. Check for class variance issues (single-class files, highly imbalanced)
-    2. Handle problematic files based on strategy
-    3. Count labels across all remaining files
-    4. Determine minority and majority classes
-    5. Calculate target counts based on target_ratio
-    6. Remove excess majority class samples from files
-    7. Remove entire files if they become too small
+    Balance extremely imbalanced binary labeled graph data in .pt files.
     
     Args:
-        edges_dir: Directory containing .npy files
-        target_ratio: Target ratio of majority:minority (1.0 = balanced, 2.0 = 2:1, etc.)
-        split: Split identifier in filename (e.g., 'train', 'val', 'test')
-        label_col: Column index containing binary labels (default: -1, last column)
-        min_samples_per_file: Minimum samples to keep a file (files below this are removed)
-        dry_run: If True, only report what would be done without modifying files
-        backup: If True, create .bak copies before modifying files
-        verbose: If True, print progress and statistics
-        handle_single_class: How to handle single-class files:
-            - 'remove': Delete files containing only one class
-            - 'merge': Merge single-class files together (creates larger mixed files)
-            - 'keep': Keep them as-is (not recommended)
-        imbalance_threshold: Files with >this fraction of one class are flagged (0.95 = 95%)
-    
+        edges_dir: Directory containing .pt files
+        target_ratio: Target ratio of majority:minority (1.0 = balanced)
+        split: Split identifier in directory structure
+        min_edges_per_file: Minimum edges to keep a file
+        dry_run: If True, only report without modifying
+        backup: If True, create .bak copies
+        verbose: If True, print progress
+        handle_single_class: 'remove', 'merge', or 'keep'
+        imbalance_threshold: Threshold for flagging imbalanced files
+        remove_isolated_nodes: Remove nodes with no edges after balancing
+        
     Returns:
-        dict: Statistics about the balancing operation
+        Dictionary of statistics
     """
-    edges_dir = Path(edges_dir.joinpath(split))
+    edges_dir = Path(edges_dir) / split
     
     if not edges_dir.exists():
         raise ValueError(f"Directory does not exist: {edges_dir}")
     
-    # Find all .npy files matching the split
-    pattern = f"*.npy"
-    npy_files = sorted(edges_dir.glob(pattern))
+    pattern = "*.pt"
+    pt_files = sorted(edges_dir.glob(pattern))
     
-    if not npy_files:
+    if not pt_files:
         if verbose:
-            print(f"WARNING: No .npy files found matching pattern '{pattern}' in {edges_dir}")
+            print(f"WARNING: No .pt files found matching pattern '{pattern}' in {edges_dir}")
         return {}
     
     if verbose:
         print(f"\n{'='*80}")
-        print(f"BALANCE EDGE FILES - {split.upper()} SPLIT")
+        print(f"BALANCE GRAPH FILES - {split.upper()} SPLIT")
         print(f"{'='*80}\n")
-        print(f"Found {len(npy_files)} files matching pattern '{pattern}'")
+        print(f"Found {len(pt_files)} files matching pattern '{pattern}'")
     
-    # Phase 0: Check for class variance issues
+    stats = BalancingStats()
+    
+    # PHASE 0-1: Scan files and gather statistics
     if verbose:
         print(f"\n{'='*80}")
-        print("PHASE 0: Checking for class variance issues...")
+        print("PHASE 0-1: Scanning files and gathering statistics...")
         print(f"{'='*80}\n")
     
-    file_checks = []
-    only_class_0_files = []
-    only_class_1_files = []
+    file_info = []
+    single_class_0_files = []
+    single_class_1_files = []
     highly_imbalanced_files = []
-    valid_files = []
     
-    for file_path in npy_files:
-        check_result = check_file_variance(file_path, label_col, imbalance_threshold)
-        
-        if not check_result['valid']:
+    pbar = tqdm(pt_files, desc="Scanning files", disable=not verbose)
+    
+    for file_path in pbar:
+        try:
+            # Load graph (efficient loading with weights_only for security)
+            graph_data = torch.load(file_path, map_location='cpu', weights_only=True)
+            
+            if 'edge_index' not in graph_data or 'y' not in graph_data:
+                continue
+            
+            edge_labels = graph_data['y']
+            edge_index = graph_data['edge_index']
+            
+            # Count unique edges (since graph is undirected)
+            unique_mask = get_unique_edges_mask(edge_index)
+            unique_labels = edge_labels[unique_mask]
+            n_unique_edges = len(unique_labels)
+            
+            # Calculate counts
+            class_0_count = (unique_labels == 0).sum().item()
+            class_1_count = (unique_labels == 1).sum().item()
+            
+            class_0_pct = class_0_count / n_unique_edges if n_unique_edges > 0 else 0
+            class_1_pct = class_1_count / n_unique_edges if n_unique_edges > 0 else 0
+            
+            only_class_0 = class_1_count == 0
+            only_class_1 = class_0_count == 0
+            highly_imbalanced = (class_0_pct > imbalance_threshold or
+                               class_1_pct > imbalance_threshold)
+            
+            # Store minimal info
+            info = {
+                'path': file_path,
+                'n_unique_edges': n_unique_edges,
+                'class_0_count': class_0_count,
+                'class_1_count': class_1_count,
+                'class_0_pct': class_0_pct,
+                'class_1_pct': class_1_pct,
+                'only_class_0': only_class_0,
+                'only_class_1': only_class_1,
+                'highly_imbalanced': highly_imbalanced
+            }
+            
+            # Categorize
+            if only_class_0:
+                single_class_0_files.append(info)
+            elif only_class_1:
+                single_class_1_files.append(info)
+            elif highly_imbalanced:
+                highly_imbalanced_files.append(info)
+                file_info.append(info)
+            else:
+                file_info.append(info)
+            
+            # Accumulate counts
+            stats.original_counts[0] += class_0_count
+            stats.original_counts[1] += class_1_count
+            stats.files_processed += 1
+            
+            # Clear memory
+            del graph_data
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+        except Exception as e:
             if verbose:
-                print(f"WARNING: Skipping {file_path.name}: {check_result['error']}")
+                print(f"WARNING: Error reading {file_path.name}: {e}")
             continue
-        
-        file_checks.append(check_result)
-        
-        if check_result['only_class_0']:
-            only_class_0_files.append(check_result)
-        elif check_result['only_class_1']:
-            only_class_1_files.append(check_result)
-        elif check_result['highly_imbalanced']:
-            highly_imbalanced_files.append(check_result)
-        else:
-            valid_files.append(check_result)
+    
+    stats.highly_imbalanced_count = len(highly_imbalanced_files)
     
     # Report variance issues
     if verbose:
-        total_single_class = len(only_class_0_files) + len(only_class_1_files)
-        
+        total_single_class = len(single_class_0_files) + len(single_class_1_files)
         if total_single_class > 0 or highly_imbalanced_files:
-            print(f"⚠️  CLASS VARIANCE ISSUES DETECTED:")
-            print(f"   Files with only class 0: {len(only_class_0_files)}")
-            print(f"   Files with only class 1: {len(only_class_1_files)}")
-            print(f"   Highly imbalanced files (>{imbalance_threshold*100:.0f}% one class): {len(highly_imbalanced_files)}")
-            print(f"   Reasonably balanced files: {len(valid_files)}")
-            print(f"\n   Strategy for single-class files: {handle_single_class.upper()}")
+            print(f"CLASS VARIANCE ISSUES DETECTED:")
+            print(f"  Files with only class 0: {len(single_class_0_files)}")
+            print(f"  Files with only class 1: {len(single_class_1_files)}")
+            print(f"  Highly imbalanced files (>{imbalance_threshold*100:.0f}% one class): {len(highly_imbalanced_files)}")
+            print(f"  Reasonably balanced files: {len(file_info) - len(highly_imbalanced_files)}")
+            print(f"\nStrategy for single-class files: {handle_single_class.upper()}")
         else:
-            print(f"✓ No class variance issues detected")
-            print(f"  All {len(valid_files)} files have reasonable class balance")
+            print(f"No class variance issues detected")
+            print(f"All {len(file_info)} files have reasonable class balance")
     
     # Handle single-class files
-    single_class_files_removed = 0
-    single_class_files_merged = 0
+    single_class_files = single_class_0_files + single_class_1_files
     
-    if handle_single_class == 'remove' and (only_class_0_files or only_class_1_files):
+    if handle_single_class == 'remove' and single_class_files:
         if verbose:
-            print(f"\nRemoving {len(only_class_0_files) + len(only_class_1_files)} single-class files...")
+            print(f"\nRemoving {len(single_class_files)} single-class files...")
         
-        for file_info in only_class_0_files + only_class_1_files:
-            if verbose:
-                print(f"  Removing {file_info['path'].name} ({file_info['n_samples']} samples, only class {0 if file_info['only_class_0'] else 1})")
-            
+        pbar = tqdm(single_class_files, desc="Removing files", disable=not verbose)
+        for info in pbar:
             if not dry_run:
                 if backup:
-                    backup_path = file_info['path'].with_suffix('.npy.bak')
-                    file_info['path'].rename(backup_path)
+                    backup_path = info['path'].with_suffix('.pt.bak')
+                    info['path'].rename(backup_path)
                 else:
-                    file_info['path'].unlink()
-            
-            single_class_files_removed += 1
-        
-        # Remove from file_checks
-        file_checks = [f for f in file_checks if not f['single_class']]
+                    info['path'].unlink()
+            stats.single_class_files_removed += 1
     
-    elif handle_single_class == 'merge' and (only_class_0_files or only_class_1_files):
+    elif handle_single_class == 'merge' and single_class_files:
         if verbose:
             print(f"\nMerging single-class files...")
         
-        # Note: Merging strategy creates larger files but doesn't mix classes
-        # This is mainly to consolidate storage, not to create balanced files
-        if only_class_0_files:
-            merged_0 = merge_single_class_files(only_class_0_files, 0)
-            if verbose:
-                print(f"  Merged {len(only_class_0_files)} class-0 files into {len(merged_0)} larger files")
-        
-        if only_class_1_files:
-            merged_1 = merge_single_class_files(only_class_1_files, 1)
-            if verbose:
-                print(f"  Merged {len(only_class_1_files)} class-1 files into {len(merged_1)} larger files")
-        
-        # Save merged files and remove originals
-        if not dry_run:
+        # Merge class 0 graphs
+        if single_class_0_files:
             merged_count = 0
+            current_batch = []
+            current_edge_count = 0
+            max_edges = 5000
             
-            if only_class_0_files:
-                for i, merged_data in enumerate(merged_0):
-                    new_path = edges_dir / f"merged_class0_{i:04d}.npy"
-                    np.save(new_path, merged_data)
-                    merged_count += 1
+            pbar = tqdm(single_class_0_files, desc="Merging class 0", disable=not verbose)
+            for info in pbar:
+                graph_data = torch.load(info['path'], map_location='cpu', weights_only=True)
+                n_edges = graph_data['edge_index'].size(1)
                 
-                for file_info in only_class_0_files:
-                    if backup:
-                        backup_path = file_info['path'].with_suffix('.npy.bak')
-                        file_info['path'].rename(backup_path)
-                    else:
-                        file_info['path'].unlink()
-            
-            if only_class_1_files:
-                for i, merged_data in enumerate(merged_1):
-                    new_path = edges_dir / f"merged_class1_{i:04d}.npy"
-                    np.save(new_path, merged_data)
-                    merged_count += 1
+                if current_edge_count + n_edges <= max_edges:
+                    current_batch.append(graph_data)
+                    current_edge_count += n_edges
+                else:
+                    if current_batch and not dry_run:
+                        merged_graph = merge_graphs(current_batch)
+                        new_path = edges_dir / f"merged_class0_{merged_count:04d}.pt"
+                        torch.save(merged_graph, new_path)
+                        merged_count += 1
+                    current_batch = [graph_data]
+                    current_edge_count = n_edges
                 
-                for file_info in only_class_1_files:
-                    if backup:
-                        backup_path = file_info['path'].with_suffix('.npy.bak')
-                        file_info['path'].rename(backup_path)
-                    else:
-                        file_info['path'].unlink()
+                del graph_data
             
-            single_class_files_merged = len(only_class_0_files) + len(only_class_1_files)
+            # Save remaining
+            if current_batch and not dry_run:
+                merged_graph = merge_graphs(current_batch)
+                new_path = edges_dir / f"merged_class0_{merged_count:04d}.pt"
+                torch.save(merged_graph, new_path)
+                merged_count += 1
             
             if verbose:
-                print(f"  Created {merged_count} merged files")
+                print(f"  Created {merged_count} merged class-0 files")
+            
+            # Remove originals
+            if not dry_run:
+                for info in single_class_0_files:
+                    if backup:
+                        info['path'].rename(info['path'].with_suffix('.pt.bak'))
+                    else:
+                        info['path'].unlink()
         
-        # Note: We keep single-class files in file_checks for balancing
-        # but they're now merged into larger files
+        # Merge class 1 graphs (similar logic)
+        if single_class_1_files:
+            merged_count = 0
+            current_batch = []
+            current_edge_count = 0
+            max_edges = 5000
+            
+            pbar = tqdm(single_class_1_files, desc="Merging class 1", disable=not verbose)
+            for info in pbar:
+                graph_data = torch.load(info['path'], map_location='cpu', weights_only=True)
+                n_edges = graph_data['edge_index'].size(1)
+                
+                if current_edge_count + n_edges <= max_edges:
+                    current_batch.append(graph_data)
+                    current_edge_count += n_edges
+                else:
+                    if current_batch and not dry_run:
+                        merged_graph = merge_graphs(current_batch)
+                        new_path = edges_dir / f"merged_class1_{merged_count:04d}.pt"
+                        torch.save(merged_graph, new_path)
+                        merged_count += 1
+                    current_batch = [graph_data]
+                    current_edge_count = n_edges
+                
+                del graph_data
+            
+            # Save remaining
+            if current_batch and not dry_run:
+                merged_graph = merge_graphs(current_batch)
+                new_path = edges_dir / f"merged_class1_{merged_count:04d}.pt"
+                torch.save(merged_graph, new_path)
+                merged_count += 1
+            
+            if verbose:
+                print(f"  Created {merged_count} merged class-1 files")
+            
+            # Remove originals
+            if not dry_run:
+                for info in single_class_1_files:
+                    if backup:
+                        info['path'].rename(info['path'].with_suffix('.pt.bak'))
+                    else:
+                        info['path'].unlink()
+        
+        stats.single_class_files_merged = len(single_class_files)
     
-    if not file_checks:
+    if not file_info:
         if verbose:
-            print("ERROR: No valid files to process after variance check")
-        return {}
+            print("No valid files to process after variance check")
+        return stats.__dict__
     
-    # Phase 1: Analyze all files
+    # Recalculate counts from remaining files
+    remaining_counts = {0: 0, 1: 0}
+    for info in file_info:
+        remaining_counts[0] += info['class_0_count']
+        remaining_counts[1] += info['class_1_count']
+    
+    # Determine minority/majority
+    minority_class = 0 if remaining_counts[0] < remaining_counts[1] else 1
+    majority_class = 1 - minority_class
+    minority_count = remaining_counts[minority_class]
+    majority_count = remaining_counts[majority_class]
+    
     if verbose:
         print(f"\n{'='*80}")
-        print("PHASE 1: Analyzing label distribution...")
+        print("PHASE 2: Analyzing label distribution...")
         print(f"{'='*80}\n")
-    
-    file_stats = []
-    total_counts = {0: 0, 1: 0}
-    
-    for check_result in file_checks:
-        file_count = {
-            0: check_result['class_0_count'],
-            1: check_result['class_1_count']
-        }
-        
-        file_stats.append({
-            'path': check_result['path'],
-            'data': check_result['data'],
-            'labels': check_result['labels'],
-            'counts': file_count,
-            'total': check_result['n_samples']
-        })
-        
-        total_counts[0] += file_count[0]
-        total_counts[1] += file_count[1]
-    
-    # Determine minority and majority classes
-    minority_class = 0 if total_counts[0] < total_counts[1] else 1
-    majority_class = 1 - minority_class
-    
-    minority_count = total_counts[minority_class]
-    majority_count = total_counts[majority_class]
-    
-    if verbose:
         print(f"Original distribution:")
-        print(f"  Class {minority_class} (minority): {minority_count:,} samples")
-        print(f"  Class {majority_class} (majority): {majority_count:,} samples")
+        print(f"  Class {minority_class} (minority): {minority_count:,} edges")
+        print(f"  Class {majority_class} (majority): {majority_count:,} edges")
         print(f"  Imbalance ratio: {majority_count/max(minority_count, 1):.2f}:1")
     
-    # Phase 2: Calculate target counts
+    # Calculate targets
     target_majority_count = int(minority_count * target_ratio)
-    samples_to_remove = majority_count - target_majority_count
+    edges_to_remove = majority_count - target_majority_count
     
     if verbose:
         print(f"\nTarget distribution (ratio {target_ratio}:1):")
-        print(f"  Class {minority_class}: {minority_count:,} samples (unchanged)")
-        print(f"  Class {majority_class}: {target_majority_count:,} samples")
-        print(f"  Samples to remove: {samples_to_remove:,}")
+        print(f"  Class {minority_class}: {minority_count:,} edges (unchanged)")
+        print(f"  Class {majority_class}: {target_majority_count:,} edges")
+        print(f"  Edges to remove: {edges_to_remove:,}")
     
-    if samples_to_remove <= 0:
+    if edges_to_remove <= 0:
         if verbose:
             print("\nData is already balanced or minority class is larger. No action needed.")
-        return {
-            'files_processed': len(file_stats),
-            'files_removed': single_class_files_removed,
-            'files_merged': single_class_files_merged,
-            'samples_removed': 0,
-            'original_counts': total_counts,
-            'final_counts': total_counts,
-            'single_class_files_removed': single_class_files_removed,
-            'single_class_files_merged': single_class_files_merged
-        }
+        stats.final_counts = stats.original_counts.copy()
+        return stats.__dict__
     
-    # Phase 3: Balance files
+    # PHASE 3: Balance files
     if verbose:
         print(f"\n{'='*80}")
-        print(f"PHASE 2: {'Simulating' if dry_run else 'Balancing'} files...")
+        print(f"PHASE 3: {'Simulating' if dry_run else 'Balancing'} files...")
         print(f"{'='*80}\n")
     
-    files_modified = 0
-    files_removed = 0
-    total_removed = 0
-    removed_per_file = []
+    pbar = tqdm(file_info, desc="Balancing files", disable=not verbose)
     
-    for file_info in file_stats:
-        file_path = file_info['path']
-        data = file_info['data']
-        labels = file_info['labels']
-        counts = file_info['counts']
-        
-        majority_in_file = counts[majority_class]
-        minority_in_file = counts[minority_class]
+    for info in pbar:
+        majority_in_file = info['class_1_count'] if majority_class == 1 else info['class_0_count']
+        minority_in_file = info['class_0_count'] if majority_class == 1 else info['class_1_count']
         
         if majority_in_file == 0:
-            # File contains only minority class - keep as is
             continue
         
-        # Calculate how many majority samples to keep in this file
-        # Proportional to the file's contribution to total majority samples
+        # Calculate proportional target
         proportion = majority_in_file / majority_count
         target_majority_in_file = int(target_majority_count * proportion)
         
-        # Ensure we keep at least some samples if there's minority class
         if minority_in_file > 0:
             target_majority_in_file = max(target_majority_in_file, 1)
         
-        samples_to_remove_from_file = majority_in_file - target_majority_in_file
+        edges_to_remove_from_file = majority_in_file - target_majority_in_file
         
-        if samples_to_remove_from_file <= 0:
+        if edges_to_remove_from_file <= 0:
             continue
         
-        # Get indices of majority and minority samples
-        majority_indices = np.where(labels == majority_class)[0]
-        minority_indices = np.where(labels == minority_class)[0]
+        # Load and balance
+        graph_data = torch.load(info['path'], map_location='cpu', weights_only=True)
         
-        # Randomly select majority samples to keep
-        np.random.seed(42)  # For reproducibility
-        keep_majority_indices = np.random.choice(
-            majority_indices, 
-            size=target_majority_in_file, 
-            replace=False
+        balanced_graph, removed, new_class_0, new_class_1 = balance_graph_data(
+            graph_data,
+            target_ratio,
+            majority_class,
+            minority_class,
+            min_edges_per_file,
+            remove_isolated_nodes
         )
         
-        # Combine minority and selected majority samples
-        keep_indices = np.concatenate([minority_indices, keep_majority_indices])
-        keep_indices = np.sort(keep_indices)
+        del graph_data
         
-        new_data = data[keep_indices]
-        new_total = len(new_data)
-        
-        # Check if file should be removed
-        if new_total < min_samples_per_file:
-            if verbose:
-                print(f"  {file_path.name}: {new_total} samples < {min_samples_per_file} minimum, REMOVING file")
+        if balanced_graph is None:
+            # File too small after balancing
             if not dry_run:
                 if backup:
-                    backup_path = file_path.with_suffix('.npy.bak')
-                    file_path.rename(backup_path)
+                    info['path'].rename(info['path'].with_suffix('.pt.bak'))
                 else:
-                    file_path.unlink()
-            files_removed += 1
-            total_removed += majority_in_file
+                    info['path'].unlink()
+            stats.files_removed += 1
+            stats.edges_removed += majority_in_file
         else:
-            if verbose:
-                print(f"  {file_path.name}: {counts[0]}/{counts[1]} -> "
-                           f"{np.sum(new_data[:, label_col] == 0)}/{np.sum(new_data[:, label_col] == 1)} "
-                           f"(removed {samples_to_remove_from_file} samples)")
-            
             if not dry_run:
                 if backup:
-                    backup_path = file_path.with_suffix('.npy.bak')
-                    np.save(backup_path, data)
-                
-                np.save(file_path, new_data)
+                    backup_path = info['path'].with_suffix('.pt.bak')
+                    torch.save(torch.load(info['path'], map_location='cpu', weights_only=True), backup_path)
+                torch.save(balanced_graph, info['path'])
             
-            files_modified += 1
-            total_removed += samples_to_remove_from_file
-            removed_per_file.append(samples_to_remove_from_file)
+            stats.files_modified += 1
+            stats.edges_removed += removed
+            stats.removed_per_file.append(removed)
+        
+        del balanced_graph
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
-    # Final statistics
-    final_majority = majority_count - total_removed
-    final_counts = {
+    # Calculate final counts
+    final_majority = majority_count - stats.edges_removed
+    stats.final_counts = {
         minority_class: minority_count,
         majority_class: final_majority
     }
     
+    # Final summary
     if verbose:
         print(f"\n{'='*80}")
         print(f"{'[DRY RUN] ' if dry_run else ''}SUMMARY")
         print(f"{'='*80}\n")
-        print(f"Single-class files removed: {single_class_files_removed}")
-        print(f"Single-class files merged: {single_class_files_merged}")
-        print(f"Files modified: {files_modified}")
-        print(f"Files removed (too small): {files_removed}")
-        print(f"Total samples removed: {total_removed:,}")
+        print(f"Single-class files removed: {stats.single_class_files_removed}")
+        print(f"Single-class files merged: {stats.single_class_files_merged}")
+        print(f"Files modified: {stats.files_modified}")
+        print(f"Files removed (too small): {stats.files_removed}")
+        print(f"Total edges removed: {stats.edges_removed:,}")
         print(f"\nFinal distribution:")
         print(f"  Class {minority_class}: {minority_count:,}")
         print(f"  Class {majority_class}: {final_majority:,}")
@@ -463,49 +557,63 @@ def balance_edge_files(
         if dry_run:
             print("\nThis was a dry run. No files were modified.")
     
+    return stats.__dict__
+
+
+def merge_graphs(graphs: list) -> dict:
+    """
+    Merge multiple graphs into a single graph.
+    Node indices are renumbered to be sequential.
+    """
+    if not graphs:
+        return None
+    
+    if len(graphs) == 1:
+        return graphs[0]
+    
+    merged_x = []
+    merged_edge_index = []
+    merged_edge_attr = []
+    merged_y = []
+    merged_pos = []
+    
+    node_offset = 0
+    
+    for graph in graphs:
+        merged_x.append(graph['x'])
+        merged_pos.append(graph['pos'])
+        merged_edge_attr.append(graph['edge_attr'])
+        merged_y.append(graph['y'])
+        
+        # Offset edge indices
+        offset_edge_index = graph['edge_index'] + node_offset
+        merged_edge_index.append(offset_edge_index)
+        
+        node_offset += graph['num_nodes']
+    
     return {
-        'files_processed': len(file_stats),
-        'files_modified': files_modified,
-        'files_removed': files_removed,
-        'samples_removed': total_removed,
-        'original_counts': total_counts,
-        'final_counts': final_counts,
-        'removed_per_file': removed_per_file,
-        'single_class_files_removed': single_class_files_removed,
-        'single_class_files_merged': single_class_files_merged,
-        'highly_imbalanced_count': len(highly_imbalanced_files)
+        'x': torch.cat(merged_x, dim=0),
+        'edge_index': torch.cat(merged_edge_index, dim=1),
+        'edge_attr': torch.cat(merged_edge_attr, dim=0),
+        'y': torch.cat(merged_y, dim=0),
+        'pos': torch.cat(merged_pos, dim=0),
+        'num_nodes': node_offset
     }
 
 
 if __name__ == "__main__":
-    # Example usage
     edges_dir = Path("data/edges")
+    splits = ["train", "val", "test"]
     
-    # First do a dry run to see what would happen
-    print("=" * 80)
-    print("DRY RUN - No files will be modified")
-    print("=" * 80)
-    stats = balance_edge_files(
-        edges_dir, 
-        target_ratio=1.0,  # 1:1 ratio
-        split='train',
-        dry_run=True,
-        verbose=True,
-        handle_single_class='remove',  # or 'merge' or 'keep'
-        backup=False,
-        imbalance_threshold=0.7
-    )
-    
-    # Uncomment to actually perform the balancing
-    print("\n" + "=" * 80)
-    print("ACTUAL RUN - Files will be modified")
-    print("=" * 80)
-    stats = balance_edge_files(
-        edges_dir, 
-        target_ratio=1.0,
-        split='train',
-        dry_run=False,
-        backup=False,
-        verbose=True,
-        handle_single_class='remove'  # Remove single-class files
-    )
+    for split in splits:
+        print(f"\nProcessing {split} split...")
+        stats = balance_graph_files(
+            edges_dir,
+            target_ratio=1.0,
+            split=split,
+            dry_run=False,
+            backup=False,
+            verbose=True,
+            handle_single_class='remove',
+            remove_isolated_nodes=True
+        )
