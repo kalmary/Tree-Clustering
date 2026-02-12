@@ -7,6 +7,7 @@ import torch
 from tqdm import tqdm
 from typing import Iterator, Dict, Tuple, List
 from dataclasses import dataclass
+from collections import defaultdict
 
 
 @dataclass
@@ -62,6 +63,7 @@ def load_graph_data_generator(
 ) -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """
     Generator that yields batches of (edge_features, edge_labels, node_features) from .pt files.
+    Works with single-graph-per-file structure.
     
     Args:
         pt_files: List of .pt file paths
@@ -80,7 +82,8 @@ def load_graph_data_generator(
     
     for pt_file in pbar:
         try:
-            graph_data = torch.load(pt_file, map_location='cpu')
+            # Load single graph
+            graph_data = torch.load(pt_file, map_location='cpu', weights_only=True)
             
             # Extract data from graph
             edge_attr = graph_data['edge_attr'].numpy()
@@ -110,7 +113,7 @@ def load_graph_data_generator(
                 if len(batch_edge_features) > batch_size:
                     current_edge_features = [batch_edge_features[batch_size:]]
                     current_edge_labels = [batch_edge_labels[batch_size:]]
-                    current_node_features = [batch_node_features]  # Keep all nodes
+                    current_node_features = [batch_node_features]
                     current_size = len(current_edge_features[0])
                 else:
                     current_edge_features = []
@@ -149,7 +152,7 @@ def compute_quantiles_streaming(
     
     for pt_file in pbar:
         try:
-            graph_data = torch.load(pt_file, map_location='cpu')
+            graph_data = torch.load(pt_file, map_location='cpu', weights_only=True)
             edge_features = graph_data['edge_attr'].numpy()
             
             for i in range(len(edge_features)):
@@ -200,7 +203,7 @@ def compute_class_statistics_streaming(
     
     for pt_file in pbar:
         try:
-            graph_data = torch.load(pt_file, map_location='cpu')
+            graph_data = torch.load(pt_file, map_location='cpu', weights_only=True)
             edge_features = graph_data['edge_attr'].numpy()
             edge_labels = graph_data['y'].numpy()
             
@@ -235,6 +238,7 @@ def analyze_graph_data(
 ):
     """
     Memory-efficient analysis of graph edge data from .pt files.
+    Optimized for voxelized graph structure (one graph per file).
     
     Args:
         edges_dir: Path to edges directory containing .pt files
@@ -257,23 +261,53 @@ def analyze_graph_data(
         print(f"{'='*80}\n")
         print(f"Found {len(pt_files)} graph files")
         print(f"Memory-efficient mode: Processing in batches")
+        print(f"Graph structure: One voxelized graph per file")
     
-    # Check dimensions and total sample count
+    # =========================================================================
+    # SCAN FILES FOR BASIC STATISTICS
+    # =========================================================================
     if verbose:
-        print(f"\nScanning files for dimensions...")
+        print(f"\nScanning files for dimensions and graph structure...")
     
     total_edges = 0
     total_nodes = 0
     n_features = None
     n_node_features = None
     
+    # Graph size distribution
+    edges_per_graph = []
+    nodes_per_graph = []
+    single_class_graphs = 0
+    mixed_class_graphs = 0
+    class_0_only = 0
+    class_1_only = 0
+    
     pbar = tqdm(pt_files, desc="Scanning files", disable=not verbose) if verbose else pt_files
     
     for pt_file in pbar:
         try:
-            graph_data = torch.load(pt_file, map_location='cpu')
-            total_edges += graph_data['edge_attr'].shape[0]
-            total_nodes += graph_data['num_nodes']
+            graph_data = torch.load(pt_file, map_location='cpu', weights_only=True)
+            n_edges = graph_data['edge_attr'].shape[0]
+            n_nodes = graph_data['num_nodes']
+            
+            total_edges += n_edges
+            total_nodes += n_nodes
+            edges_per_graph.append(n_edges)
+            nodes_per_graph.append(n_nodes)
+            
+            # Check class distribution in this graph
+            labels = graph_data['y'].numpy()
+            class_0 = (labels == 0).sum()
+            class_1 = (labels == 1).sum()
+            
+            if class_0 == 0 or class_1 == 0:
+                single_class_graphs += 1
+                if class_0 == 0:
+                    class_1_only += 1
+                else:
+                    class_0_only += 1
+            else:
+                mixed_class_graphs += 1
             
             if n_features is None:
                 n_features = graph_data['edge_attr'].shape[1]
@@ -284,10 +318,27 @@ def analyze_graph_data(
             continue
     
     if verbose:
-        print(f"\nTotal edges: {total_edges:,}")
-        print(f"Total nodes: {total_nodes:,}")
-        print(f"Number of edge features: {n_features}")
-        print(f"Number of node features: {n_node_features}")
+        print(f"\nDataset Overview:")
+        print(f"  Total graphs: {len(pt_files):,}")
+        print(f"  Total edges: {total_edges:,}")
+        print(f"  Total nodes: {total_nodes:,}")
+        print(f"  Number of edge features: {n_features}")
+        print(f"  Number of node features: {n_node_features}")
+        
+        print(f"\nGraph Size Distribution:")
+        print(f"  Edges per graph - Mean: {np.mean(edges_per_graph):.1f}, "
+              f"Median: {np.median(edges_per_graph):.1f}, "
+              f"Min: {np.min(edges_per_graph)}, Max: {np.max(edges_per_graph)}")
+        print(f"  Nodes per graph - Mean: {np.mean(nodes_per_graph):.1f}, "
+              f"Median: {np.median(nodes_per_graph):.1f}, "
+              f"Min: {np.min(nodes_per_graph)}, Max: {np.max(nodes_per_graph)}")
+        print(f"  Average degree (edges/node): {total_edges/total_nodes:.2f}")
+        
+        print(f"\nClass Distribution per Graph:")
+        print(f"  Mixed-class graphs: {mixed_class_graphs:,} ({mixed_class_graphs/len(pt_files)*100:.1f}%)")
+        print(f"  Single-class graphs: {single_class_graphs:,} ({single_class_graphs/len(pt_files)*100:.1f}%)")
+        print(f"    - Class 0 only: {class_0_only:,}")
+        print(f"    - Class 1 only: {class_1_only:,}")
     
     # Feature names for edge features
     edge_feature_names = [
@@ -422,11 +473,11 @@ def analyze_graph_data(
         print("   Formula: (x - mean) / std")
         print("\n   Python code:")
         print("   ```python")
-        print("   means = np.array([")
+        print("   means = torch.tensor([")
         means_str = ", ".join([f"{feature_stats[name]['mean']:.6f}" for name in edge_feature_names])
         print(f"       {means_str}")
         print("   ])")
-        print("   stds = np.array([")
+        print("   stds = torch.tensor([")
         stds_str = ", ".join([f"{feature_stats[name]['std']:.6f}" for name in edge_feature_names])
         print(f"       {stds_str}")
         print("   ])")
@@ -438,11 +489,11 @@ def analyze_graph_data(
         print("   Formula: (x - min) / (max - min)")
         print("\n   Python code:")
         print("   ```python")
-        print("   mins = np.array([")
+        print("   mins = torch.tensor([")
         mins_str = ", ".join([f"{feature_stats[name]['min']:.6f}" for name in edge_feature_names])
         print(f"       {mins_str}")
         print("   ])")
-        print("   maxs = np.array([")
+        print("   maxs = torch.tensor([")
         maxs_str = ", ".join([f"{feature_stats[name]['max']:.6f}" for name in edge_feature_names])
         print(f"       {maxs_str}")
         print("   ])")
@@ -450,6 +501,7 @@ def analyze_graph_data(
         print("   ```")
     
     # Save to JSON
+    scaling_params = None
     if save_stats:
         scaling_params = {
             'feature_names': edge_feature_names,
@@ -458,6 +510,25 @@ def analyze_graph_data(
             'n_node_features': n_node_features,
             'n_edges': total_edges,
             'n_nodes': total_nodes,
+            'n_graphs': len(pt_files),
+            'graph_stats': {
+                'edges_per_graph': {
+                    'mean': float(np.mean(edges_per_graph)),
+                    'median': float(np.median(edges_per_graph)),
+                    'min': int(np.min(edges_per_graph)),
+                    'max': int(np.max(edges_per_graph))
+                },
+                'nodes_per_graph': {
+                    'mean': float(np.mean(nodes_per_graph)),
+                    'median': float(np.median(nodes_per_graph)),
+                    'min': int(np.min(nodes_per_graph)),
+                    'max': int(np.max(nodes_per_graph))
+                },
+                'single_class_graphs': single_class_graphs,
+                'mixed_class_graphs': mixed_class_graphs,
+                'class_0_only_graphs': class_0_only,
+                'class_1_only_graphs': class_1_only
+            },
             'standard_scaling': {
                 'means': [feature_stats[name]['mean'] for name in edge_feature_names],
                 'stds': [feature_stats[name]['std'] for name in edge_feature_names]
@@ -495,7 +566,7 @@ def analyze_graph_data(
     
     for pt_file in tqdm(pt_files, desc="Counting classes", disable=not verbose):
         try:
-            graph_data = torch.load(pt_file, map_location='cpu')
+            graph_data = torch.load(pt_file, map_location='cpu', weights_only=True)
             labels = graph_data['y'].numpy()
             class_0_count += int(np.sum(labels == 0))
             class_1_count += int(np.sum(labels == 1))
@@ -509,10 +580,15 @@ def analyze_graph_data(
     pct_1 = (class_1_count / total_samples) * 100 if total_samples > 0 else 0
     
     if verbose:
-        print(f"Class 0 (different trees): {class_0_count:,} samples ({pct_0:.2f}%)")
-        print(f"Class 1 (same tree):       {class_1_count:,} samples ({pct_1:.2f}%)")
+        print(f"Class 0 (different trees): {class_0_count:,} edges ({pct_0:.2f}%)")
+        print(f"Class 1 (same tree):       {class_1_count:,} edges ({pct_1:.2f}%)")
         if min(class_0_count, class_1_count) > 0:
             print(f"Imbalance ratio: {max(class_0_count, class_1_count) / min(class_0_count, class_1_count):.2f}:1")
+        
+        print(f"\nRecommendation:")
+        if single_class_graphs > 0:
+            print(f"  ⚠ {single_class_graphs} graphs ({single_class_graphs/len(pt_files)*100:.1f}%) have only one class")
+            print(f"  Consider using balance_graph_files_streaming() to remove 95% of single-class graphs")
     
     # =========================================================================
     # FEATURE IMPORTANCE ANALYSIS (with sampling)
@@ -521,7 +597,7 @@ def analyze_graph_data(
         print(f"\n{'='*80}")
         print("FEATURE IMPORTANCE ANALYSIS")
         print(f"{'='*80}\n")
-        print(f"Sampling {max_samples_rf:,} samples for Random Forest...")
+        print(f"Sampling {max_samples_rf:,} edges for Random Forest...")
     
     # Collect sample for RF training
     sample_features = []
@@ -533,7 +609,7 @@ def analyze_graph_data(
             break
         
         try:
-            graph_data = torch.load(pt_file, map_location='cpu')
+            graph_data = torch.load(pt_file, map_location='cpu', weights_only=True)
             edge_features = graph_data['edge_attr'].numpy()
             edge_labels = graph_data['y'].numpy()
             
@@ -634,29 +710,13 @@ def analyze_graph_data(
             
             print(f"  {name:<25} {fisher_score:>15.4f} {interpretation}")
     
-    # =========================================================================
-    # GRAPH-SPECIFIC METRICS
-    # =========================================================================
-    if verbose:
-        print(f"\n{'='*80}")
-        print("GRAPH STRUCTURE ANALYSIS")
-        print(f"{'='*80}\n")
-        
-        avg_edges_per_graph = total_edges / len(pt_files)
-        avg_nodes_per_graph = total_nodes / len(pt_files)
-        avg_edges_per_node = total_edges / total_nodes if total_nodes > 0 else 0
-        
-        print(f"Average edges per graph: {avg_edges_per_graph:.1f}")
-        print(f"Average nodes per graph: {avg_nodes_per_graph:.1f}")
-        print(f"Average degree (edges/node): {avg_edges_per_node:.2f}")
-    
-    return feature_stats, scaling_params if save_stats else None
+    return feature_stats, scaling_params
 
 
 def main():
     edges_dir = Path("data/edges")
     
-    for split in ['train']:
+    for split in ['train', 'val', 'test']:
         if (edges_dir / split).exists():
             print(f"\n{'='*80}")
             print(f"Processing {split} split...")
