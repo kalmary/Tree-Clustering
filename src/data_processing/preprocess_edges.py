@@ -72,19 +72,24 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroi
         yield subgraph
 
 
+import time
+
 def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, radius: float = 1.5, voxel_factor: float = 0.7, verbose=False):
     """
     Process a single point cloud file and save multiple small graphs.
     """
+    t_start = time.time()
+    
     cloud = np.load(cloud_path)
     xyz = cloud[:, :3]
     tree_ids = cloud[:, -1].astype(np.int32)
     del cloud
     
+    t0 = time.time()
     if use_mp:
-        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.3, max_visits=-1, verbose=True, n_jobs=-1)
+        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.25, max_visits=-1, verbose=verbose, n_jobs=-1)
     else:
-        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.3, max_visits=-1, verbose=True, n_jobs=0)
+        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.25, max_visits=-1, verbose=verbose, n_jobs=0)
 
     if len(sp_indices) == 0:
         return
@@ -101,6 +106,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
     planarity_array = np.zeros(n_sp, dtype=np.float32)
     scattering_array = np.zeros(n_sp, dtype=np.float32)
 
+    t0 = time.time()
     iterator = enumerate(sp_indices)
     if verbose:
         iterator = tqdm(iterator, total=n_sp, desc="Extracting SP features", leave=False, position=1)
@@ -118,7 +124,9 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
         planarity_array[i] = planarity
         scattering_array[i] = scattering
 
+
     # Build edges using voxelized approach - returns edges + voxel assignments
+
     edges, voxel_assignments = build_edges_voxelized(centroids=centroid_array, radius=radius, voxel_factor=voxel_factor, verbose=verbose)
     
     if edges.shape[0] == 0:
@@ -135,6 +143,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
         eps=1e-8
     )
     
+
     node_features = np.stack([
         thickness_array,
         verticality_array,
@@ -147,6 +156,8 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
 
     edge_labels = edge_labels_binary(edges, sp_tree_ids)
 
+
+    num_saved = 0
     for i, graph in enumerate(split_graph_by_voxels(edges,
                                                     edge_features,
                                                     edge_labels,
@@ -156,6 +167,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
                                                     verbose=verbose)):
         out_path = output_path.parent / f"{output_path.stem}_{i}_{output_path.suffix}"
         torch.save(graph, out_path)
+        num_saved += 1
     
     gc.collect()
 
@@ -188,14 +200,16 @@ def preprocess_dataset(input_dir, output_dir, radius: float = 1.5, voxel_factor:
 
 def main():
     # Preprocess train/val/test splits
+    verbose = True
     for split in ['train', 'val', 'test']:
-        print(f"\n=== Processing {split} split ===")
+        if verbose:
+            print(f"\n=== Processing {split} split ===")
         preprocess_dataset(
             input_dir=f'data/split/{split}',
             output_dir=f'data/edges/{split}',
             radius=1.5,
-            voxel_factor=0.7,
-            verbose=False,
+            voxel_factor=0.5,
+            verbose=verbose,
         )
 
 
