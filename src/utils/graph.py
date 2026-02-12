@@ -572,3 +572,90 @@ def edge_labels_binary(edges, sp_tree_ids):
     i = edges[:, 0]
     j = edges[:, 1]
     return (sp_tree_ids[i] == sp_tree_ids[j]).astype(np.float32)
+
+
+def build_edges_voxelized(centroids: np.ndarray, radius: float = 1.5, voxel_factor: float = 0.7, verbose = False):
+    """
+    Build edges by voxelizing space and using voxel centroids as query points.
+    Similar to superpoint building - voxels help determine search centers.
+    
+    Args:
+        centroids: (N, 3) array of centroid positions
+        radius: Distance threshold for edge connections
+        voxel_factor: Voxel size as fraction of radius (default: 0.7)
+    
+    Returns:
+        edges: (M, 2) array of edge indices
+        voxel_assignments: List of edge indices for each voxel
+    """
+    voxel_size = radius * voxel_factor
+    
+    # Build KDTree for all centroids
+    tree = cKDTree(centroids)
+    
+    # Assign each centroid to a voxel
+    voxel_coords = (centroids / voxel_size).astype(np.int32)
+    unique_voxels, inverse_indices = np.unique(voxel_coords, axis=0, return_inverse=True)
+    
+    # Compute voxel centroids (average position of points in each voxel)
+    n_voxels = len(unique_voxels)
+    voxel_sums = np.zeros((n_voxels, 3), dtype=np.float32)
+    np.add.at(voxel_sums, inverse_indices, centroids)
+    counts = np.bincount(inverse_indices, minlength=n_voxels)
+    voxel_centroids = voxel_sums / counts[:, None]
+    
+    # Query ball around each voxel centroid
+    neighbors = tree.query_ball_point(voxel_centroids, radius)
+    
+    # Build edges from neighborhood results
+    all_edges = []
+    voxel_assignments = []
+    
+
+    pbar = enumerate(neighbors)
+    if verbose:
+        pbar = tqdm(pbar, total=len(neighbors), desc="Voxelized edge building", position=1, leave=False)
+    for voxel_idx, neighbor_indices in pbar:
+        if len(neighbor_indices) < 2:
+            voxel_assignments.append([])
+            continue
+        
+        # Create edges between all pairs in this neighborhood
+        neighbor_indices = np.array(neighbor_indices)
+        tree_local = cKDTree(centroids[neighbor_indices])
+        local_edges = tree_local.query_pairs(radius, output_type='ndarray')
+        
+        if len(local_edges) > 0:
+            global_edges = neighbor_indices[local_edges]
+            
+            # Track which global edge indices belong to this voxel
+            start_idx = len(all_edges)
+            all_edges.append(global_edges)
+            end_idx = start_idx + len(global_edges)
+            
+            # Store edge indices range for this voxel (before deduplication)
+            voxel_assignments.append(list(range(start_idx, end_idx)))
+        else:
+            voxel_assignments.append([])
+    
+    if all_edges:
+        edges = np.vstack(all_edges).astype(np.int64)
+        
+        # Before deduplication, map old indices to new
+        edges_sorted = np.sort(edges, axis=1)
+        unique_edges, unique_inverse = np.unique(edges_sorted, axis=0, return_inverse=True)
+        
+        # Update voxel_assignments to point to deduplicated edges
+        cumsum = 0
+        for i, assignment in enumerate(voxel_assignments):
+            if assignment:
+                # Map old indices to new unique indices
+                old_indices = np.array(assignment)
+                new_indices = unique_inverse[old_indices]
+                voxel_assignments[i] = np.unique(new_indices).tolist()
+        
+        edges = unique_edges
+    else:
+        edges = np.array([], dtype=np.int64).reshape(0, 2)
+    
+    return edges, voxel_assignments
