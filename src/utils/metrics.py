@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 
 def binary_f1_score(preds: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
@@ -29,3 +30,20 @@ def binary_f1_score(preds: torch.Tensor, targets: torch.Tensor, threshold: float
     f1 = 2 * precision * recall / (precision + recall + 1e-7)
     
     return f1
+
+
+class FocalLossBCE(nn.Module):
+    def __init__(self, pos_weight=1.0, gamma=2.0):
+        super().__init__()
+        self.gamma = gamma
+
+        if isinstance(pos_weight, torch.Tensor):
+            self.bce = nn.BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight)
+        else:
+            self.bce = nn.BCEWithLogitsLoss(reduction='none', pos_weight=torch.tensor(pos_weight))
+
+    def forward(self, inputs, targets):
+        bce_loss = self.bce(inputs, targets)
+        pt = torch.exp(-bce_loss)
+        focal_loss = (1-pt)**self.gamma * bce_loss
+        return focal_loss.mean()

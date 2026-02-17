@@ -29,27 +29,25 @@ sys.path.append(str(src_dir))
 
 from _train_single_case import train_model
 from utils import load_json, save2json, save_model, convert_str_values
-from data_processing.preprocess_edges import preprocess_dataset
-from data_processing.balance_edges import balance_edge_files
-from data_processing.data_analysis import analyze_edges_data
+
 from utils import Plotter
 
-from AffinityMLP import AffinityMLP
+from EdgeGNN import EdgeClassifierGNN
 
 
 def check_models(model_configs_paths: list[pth.Path],
-                 max_input_size = (8192, 8),
+                 scaling_params: dict = None,
                  max_memory_GB = 20,
                  verbose: bool = False) -> tuple[list[dict], list[pth.Path]]:
     """
     Check if models defined in NeuralNet/Architectures/models_1D/model_configs compile.
     Print models not compiling.
     Return list of model configs that compile.
-"""
+    """
     logger = logging.getLogger(__name__)
     logger.info(f'START: check_models.')
 
-    # str paths to pth.Path if neccessary
+    # str paths to pth.Path if necessary
     model_configs_paths = [pth.Path(config) for config in model_configs_paths]
 
     # check each model if it compiles and take not more than max memory
@@ -59,15 +57,34 @@ def check_models(model_configs_paths: list[pth.Path],
         model_config = convert_str_values(model_config)
 
         try:
-            model = AffinityMLP(model_config)
+            model = EdgeClassifierGNN(model_config, scaling_params)
             model.eval()
-            model_summary = summary(model, input_size=max_input_size, verbose=0)
-            estimated_memory_GB = (model_summary.total_param_bytes + model_summary.total_output_bytes) / (1024 ** 3 )
+            
+            # Create dummy PyG Data object
+            from torch_geometric.data import Data
+            dummy_data = Data(
+                x=torch.randn(20, 9),  # 10 node features
+                edge_index=torch.randint(0, 20, (2, 100)),
+                edge_attr=torch.randn(100, 11)
+            )
+            
+            # Manual forward pass to check compilation and memory
+            with torch.no_grad():
+                _ = model(dummy_data)
+            
+            # Estimate memory
+            total_params = sum(p.numel() for p in model.parameters())
+            param_bytes = total_params * 4  # float32
+            
+            # Rough estimate of output size
+            output_bytes = 200 * 4  # 200 edges * 4 bytes
+            
+            estimated_memory_GB = (param_bytes + output_bytes) / (1024 ** 3)
 
             if estimated_memory_GB > max_memory_GB:
-                    raise MemoryError(f"Estimated memory {estimated_memory_GB:.2f} GB exceeds limit of {max_memory_GB:.2f} GB.")
+                raise MemoryError(f"Estimated memory {estimated_memory_GB:.2f} GB exceeds limit of {max_memory_GB:.2f} GB.")
 
-            del model, model_summary
+            del model, dummy_data
 
             if verbose:
                 logger.info(f'Model {model_config_path.name} compiled successfully. Estimated memory: {estimated_memory_GB:.2f} GB.')
@@ -80,9 +97,11 @@ def check_models(model_configs_paths: list[pth.Path],
             model_configs_paths.pop(index)
         else:
             model_configs.append(model_config)
+    
     logger.info(f'STOP: check_models. {len(model_configs)} models compiled successfully.') 
     
     return model_configs, model_configs_paths
+
 
 def get_step_list(param_value_list: list[Union[int, float]]) -> list[Union[int, float]]:
     """"Generate a list of values based on the given parameter value and type of list elements."""
@@ -220,7 +239,7 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
         model_configs_paths_list = [p for p in model_configs_paths_list if "single" not in p.stem]
     
     training_config = convert_str_values(training_config)
-    model_configs_list, _ = check_models(model_configs_paths_list, max_input_size=(8192, 8), max_memory_GB=32)
+    model_configs_list, _ = check_models(model_configs_paths_list, max_memory_GB=32)
     
     assert model_configs_list != 0, "No models compiled. Check model_configs - most likely too big models are defined"
 
@@ -521,6 +540,7 @@ def objective_function(trial: optuna.Trial,
 
     batch_size = trial.suggest_categorical('batch_size', get_step_list(exp_config['batch_size']))
     epochs = trial.suggest_categorical('epochs', get_step_list(exp_config['epochs']))
+    focal_gamma = trial.suggest_categorical('focal_gamma', get_step_list(exp_config['focal_gamma']))
 
     radius = trial.suggest_categorical('radius', get_step_list(exp_config['radius']))
 
@@ -538,6 +558,7 @@ def objective_function(trial: optuna.Trial,
         'batch_size': batch_size,
         'epochs': epochs,
         'radius': radius,
+        'focal_gamma': focal_gamma,
         'pct_start': pct_start,
         'div_factor': div_factor,
         'final_div_factor': fin_div_factor,
@@ -607,9 +628,9 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
     logger.info(f'START: optuna_based_training.')
 
     # able to automatically stop poor working exps
-    n_startup = 3
-    n_warmup_steps = 15
-    interval_steps = 5
+    n_startup = 15
+    n_warmup_steps = 30
+    interval_steps = 10
 
     pruner = optuna.pruners.MedianPruner(n_startup_trials=n_startup, n_warmup_steps=n_warmup_steps, interval_steps=interval_steps)
     logger.info(f'Pruner created: parameters: n_startup_trials: {n_startup}, n_warmup_step: {n_warmup_steps}, interval_steps: {interval_steps}')
@@ -811,7 +832,6 @@ def main():
         model_configs_paths_list = list(model_configs_dir.rglob('*.json'))
 
         check_models(model_configs_paths=model_configs_paths_list, 
-                     max_input_size=(8192, 8), 
                      max_memory_GB=20,
                      verbose=True)
 

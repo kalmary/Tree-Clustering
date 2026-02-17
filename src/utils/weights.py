@@ -4,6 +4,11 @@ from typing import Optional
 from collections import Counter
 
 
+import sys
+import torch
+from typing import Optional
+
+
 def calculate_binary_weights(
     loader: torch.utils.data.DataLoader,
     total: Optional[int] = None,
@@ -11,10 +16,10 @@ def calculate_binary_weights(
     return_pos_weight: bool = True
 ) -> float:
     """
-    Calculates weight for binary classification.
+    Calculates weight for binary edge classification from graph data.
     
     Args:
-        loader: DataLoader yielding (features, labels) where labels are 0/1
+        loader: DataLoader yielding PyG Data objects with 'y' attribute (edge labels)
         total: Total iterations (for progress display)
         verbose: Print statistics
         return_pos_weight: If True, returns pos_weight for BCEWithLogitsLoss (count_neg/count_pos)
@@ -27,13 +32,13 @@ def calculate_binary_weights(
     count_pos = 0
 
     if verbose:
-        print("\nCalculating binary class weights...")
+        print("\nCalculating binary class weights from graphs...")
     
-    for i, (_, targets) in enumerate(loader):
-        count_neg += (targets == 0).sum().item()
-        count_pos += (targets == 1).sum().item()
+    for i, data in enumerate(loader):
+        count_neg += (data.y == 0).sum().item()
+        count_pos += (data.y == 1).sum().item()
         
-        del targets
+        del data
 
         if verbose and i % 10 == 0:
             sys.stdout.write(f"\rProcessing iteration: {i}/{total if total else '?'}")
@@ -45,9 +50,9 @@ def calculate_binary_weights(
     total_samples = count_neg + count_pos
     
     if verbose:
-        print(f"\nClass distribution:")
-        print(f"  Class 0 (negative): {int(count_neg):8d} samples ({count_neg/total_samples*100:5.2f}%)")
-        print(f"  Class 1 (positive): {int(count_pos):8d} samples ({count_pos/total_samples*100:5.2f}%)")
+        print(f"\nEdge label distribution:")
+        print(f"  Class 0 (negative): {int(count_neg):8d} edges ({count_neg/total_samples*100:5.2f}%)")
+        print(f"  Class 1 (positive): {int(count_pos):8d} edges ({count_pos/total_samples*100:5.2f}%)")
     
     if count_pos == 0:
         if verbose:
@@ -55,13 +60,11 @@ def calculate_binary_weights(
         return 1.0
     
     if return_pos_weight:
-        # For BCEWithLogitsLoss pos_weight parameter
         weight = count_neg / count_pos
         if verbose:
             print(f"\npos_weight: {weight:.4f}")
             print(f"  (use with BCEWithLogitsLoss(pos_weight=...))")
     else:
-        # For Focal loss alpha parameter
         weight = count_neg / total_samples
         if verbose:
             print(f"\nAlpha weight: {weight:.4f}")
