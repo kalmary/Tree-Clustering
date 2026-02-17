@@ -21,4 +21,9 @@ def superpoint_features(points: np.ndarray, indices: np.ndarray):
     verticality = abs(np.dot(pca_dir, np.array([0.0, 0.0, 1.0])))
     thickness = np.sqrt(S[1] * S[2])
     
-    return centroid, pca_dir, thickness, verticality, linearity, planarity, scattering
+    # Additional features
+    eigenvalue_ratio = L2 / (L1 + 1e-8)
+    omnivariance = (L1 * L2 * L3) ** (1/3)
+    height_variation = np.std(P[:, 2])
+    
+    return centroid, pca_dir, thickness, verticality, linearity, planarity, scattering, eigenvalue_ratio, omnivariance, height_variation

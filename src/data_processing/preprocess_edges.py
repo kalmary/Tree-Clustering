@@ -11,7 +11,7 @@ sys.path.append(str(src_dir))
 
 from utils.superpoints import build_superpoints_mp
 from utils.features import superpoint_features
-from utils.graph import edge_labels_binary, build_edges_voxelized
+from utils.graph import edge_labels_binary, build_edges_mp, build_edges
 from utils.edge_features import edge_features_vectorized
 
 
@@ -35,6 +35,9 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroi
         voxel_edges = edges[edge_indices]
         voxel_edge_feats = edge_feats[edge_indices]
         voxel_edge_labels = edge_labels[edge_indices]
+
+        if np.unique(voxel_edge_labels).shape[0] < 2:
+            continue
         
         # Get unique nodes
         unique_nodes = np.unique(voxel_edges)
@@ -54,6 +57,7 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroi
         edge_index = torch.tensor(local_edges.T, dtype=torch.long)
         edge_attr = torch.tensor(voxel_edge_feats, dtype=torch.float32)
         y = torch.tensor(voxel_edge_labels, dtype=torch.long)
+
         x = torch.tensor(voxel_x, dtype=torch.float32)
         pos = torch.tensor(voxel_pos, dtype=torch.float32)
         
@@ -72,24 +76,21 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroi
         yield subgraph
 
 
-import time
-
 def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, radius: float = 1.5, voxel_factor: float = 0.7, verbose=False):
     """
     Process a single point cloud file and save multiple small graphs.
     """
-    t_start = time.time()
+
     
     cloud = np.load(cloud_path)
     xyz = cloud[:, :3]
     tree_ids = cloud[:, -1].astype(np.int32)
     del cloud
-    
-    t0 = time.time()
+
     if use_mp:
-        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.25, max_visits=-1, verbose=verbose, n_jobs=-1)
+        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.2, max_visits=-1, verbose=verbose, n_jobs=-1)
     else:
-        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.25, max_visits=-1, verbose=verbose, n_jobs=0)
+        sp_indices, _ = build_superpoints_mp(xyz, chunk=1000, radius=0.2, max_visits=-1, verbose=verbose, n_jobs=0)
 
     if len(sp_indices) == 0:
         return
@@ -105,15 +106,17 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
     linearity_array = np.zeros(n_sp, dtype=np.float32)
     planarity_array = np.zeros(n_sp, dtype=np.float32)
     scattering_array = np.zeros(n_sp, dtype=np.float32)
+    eigenvalue_ratio_array = np.zeros(n_sp, dtype=np.float32)
+    omnivariance_array = np.zeros(n_sp, dtype=np.float32)
+    height_variation_array = np.zeros(n_sp, dtype=np.float32)
 
-    t0 = time.time()
     iterator = enumerate(sp_indices)
     if verbose:
         iterator = tqdm(iterator, total=n_sp, desc="Extracting SP features", leave=False, position=1)
 
     for i, idx in iterator:
         idx = np.array(idx, dtype=int)
-        centroid, pca_dir, thickness, verticality, linearity, planarity, scattering = superpoint_features(xyz, idx)
+        centroid, pca_dir, thickness, verticality, linearity, planarity, scattering, eigenvalue_ratio, omnivariance, height_variation = superpoint_features(xyz, idx)
         
         sp_tree_ids[i] = np.bincount(tree_ids[idx]).argmax()
         centroid_array[i] = centroid
@@ -123,17 +126,23 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
         linearity_array[i] = linearity
         planarity_array[i] = planarity
         scattering_array[i] = scattering
+        eigenvalue_ratio_array[i] = eigenvalue_ratio
+        omnivariance_array[i] = omnivariance
+        height_variation_array[i] = height_variation
 
 
     # Build edges using voxelized approach - returns edges + voxel assignments
+    edges, voxel_assignments = build_edges(centroids=centroid_array, radius=radius, voxel_factor=voxel_factor, verbose=verbose)
+    
+    edge_labels = edge_labels_binary(edges, sp_tree_ids)
+    if np.unique(edge_labels).shape[0] < 2:
+        return
 
-    edges, voxel_assignments = build_edges_voxelized(centroids=centroid_array, radius=radius, voxel_factor=voxel_factor, verbose=verbose)
     
     if edges.shape[0] == 0:
         return
     
     # Extract edge features and labels
-
     edge_features = edge_features_vectorized(
         edges,
         centroid_array, pca_dir_array,
@@ -143,7 +152,35 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
         eps=1e-8
     )
     
+    # Add new edge features
+    src_idx = edges[:, 0]
+    dst_idx = edges[:, 1]
+    
+    # Directional agreement
+    directional_agreement = np.abs(np.sum(pca_dir_array[src_idx] * pca_dir_array[dst_idx], axis=1))
+    
+    # Vertical alignment
+    vertical_alignment = np.abs(pca_dir_array[src_idx, 2]) * np.abs(pca_dir_array[dst_idx, 2])
+    
+    # Height difference
+    height_diff = np.abs(centroid_array[src_idx, 2] - centroid_array[dst_idx, 2])
+    
+    # Thickness difference
+    thickness_diff = np.abs(thickness_array[src_idx] - thickness_array[dst_idx])
+    
+    # Verticality difference
+    verticality_diff = np.abs(verticality_array[src_idx] - verticality_array[dst_idx])
+    
+    # Stack new features with existing edge features
+    edge_features = np.column_stack([
+        edge_features,
+        directional_agreement,
+        vertical_alignment,
+        thickness_diff,
+        verticality_diff
+    ])
 
+    # Update node features
     node_features = np.stack([
         thickness_array,
         verticality_array,
@@ -151,10 +188,11 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
         planarity_array,
         scattering_array,
         centroid_array[:, 2],  # Z-coordinate (height)
-        np.array([len(idx) for idx in sp_indices])  # Density/Point count
+        eigenvalue_ratio_array,
+        omnivariance_array,
+        height_variation_array
     ], axis=1)
 
-    edge_labels = edge_labels_binary(edges, sp_tree_ids)
 
 
     num_saved = 0
@@ -208,7 +246,7 @@ def main():
             input_dir=f'data/split/{split}',
             output_dir=f'data/edges/{split}',
             radius=1.5,
-            voxel_factor=0.5,
+            voxel_factor=0.78,
             verbose=verbose,
         )
 
