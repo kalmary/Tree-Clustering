@@ -6,7 +6,7 @@
     "data_path_test": "",
     "data_path_val": "",
     
-    "batch_size": 4096,
+    "batch_size": 100,
     "radius": 1.5,
     "epochs": 75,
 

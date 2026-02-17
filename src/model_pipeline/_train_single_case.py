@@ -11,21 +11,21 @@ from typing import Dict, Any, Generator, Tuple
 src_dir = pth.Path(__file__).parent.parent
 sys.path.append(str(src_dir))
 
-from AffinityMLP import AffinityMLP
-from _data_loader import EdgeDataset
+from EdgeGNN import EdgeClassifierGNN
+from _data_loader import BatchedGraphDataset
 
 from utils import get_dataset_len
 from utils.weights import calculate_binary_weights
-from utils.metrics import binary_f1_score
+from utils.metrics import binary_f1_score, FocalLossBCE
 
 
 def train_model(
     config: Dict[str, Any]
-) -> Generator[Tuple[AffinityMLP, Dict[str, list]], None, None]:
+) -> Generator[Tuple[EdgeClassifierGNN, Dict[str, list]], None, None]:
     
-    train_dataset = EdgeDataset(
+    train_dataset = BatchedGraphDataset(
         base_dir=config['data_path_train'],
-        batch_size=config['batch_size'],
+        graphs_per_batch=config['batch_size'],
         shuffle=True,
         device=torch.device('cpu')
     )
@@ -37,9 +37,9 @@ def train_model(
         pin_memory=False
     )
 
-    val_dataset = EdgeDataset(
+    val_dataset = BatchedGraphDataset(
         base_dir=config['data_path_val'],
-        batch_size=config['batch_size'],
+        graphs_per_batch=config['batch_size'],
         shuffle=False,
         device=torch.device('cpu')
     )
@@ -57,17 +57,17 @@ def train_model(
     assert total_t > 0, "Training dataset is empty."
     assert total_v > 0, "Validation dataset is empty."
     
-    weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=False)
-    weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=False)
+    weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=False, return_pos_weight=True)
+    weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=False, return_pos_weight=True)
 
-    model = AffinityMLP(config['model_config'], scaling_config=config['scaling_config'])
+    model = EdgeClassifierGNN(config['model_config'], scaling_params=config['scaling_config'])
     model.to(config['device'])
     
-    weights_t = torch.tensor(weights_t, dtype=torch.float32)
-    weights_v = torch.tensor(weights_v, dtype=torch.float32)
+    weights_t = torch.tensor(weights_t, dtype=torch.float32).to(config['device'])
+    weights_v = torch.tensor(weights_v, dtype=torch.float32).to(config['device'])
 
-    criterion_t = nn.BCEWithLogitsLoss(pos_weight=weights_t).to(config['device'])
-    criterion_v = nn.BCEWithLogitsLoss(pos_weight=weights_v).to(config['device'])
+    criterion_t = FocalLossBCE(pos_weight=weights_t, gamma = config['focal_gamma']).to(config['device'])
+    criterion_v = FocalLossBCE(pos_weight=weights_v, gamma = config['focal_gamma']).to(config['device'])
     
     optimizer = optim.AdamW(
         model.parameters(),
@@ -95,12 +95,11 @@ def train_model(
         epoch_loss, epoch_f1, epoch_samples = 0.0, 0.0, 0
         
         pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{config['epochs']}", total=total_t, leave=False)
-        for batch_x, batch_y in pbar:
-            batch_x = batch_x.to(config['device'])
-            batch_y = batch_y.to(config['device'])
+        for batch in pbar:
+            batch = batch.to(config['device'])
             
-            logits = model(batch_x)
-            loss = criterion_t(logits, batch_y)
+            logits = model(batch)
+            loss = criterion_t(logits, batch.y.float())
             
             optimizer.zero_grad()
             loss.backward()
@@ -113,11 +112,11 @@ def train_model(
             
             preds = torch.sigmoid(logits)
             
-            batch_f1 = binary_f1_score(preds, batch_y)
+            batch_f1 = binary_f1_score(preds, batch.y.long())
             
-            epoch_loss += loss.item() * batch_y.size(0)
-            epoch_f1 += batch_f1 * batch_y.size(0)
-            epoch_samples += batch_y.size(0)
+            epoch_loss += loss.item() * batch.y.size(0)
+            epoch_f1 += batch_f1 * batch.y.size(0)
+            epoch_samples += batch.y.size(0)
             
             pbar.set_postfix({
                 'loss': f"{epoch_loss/epoch_samples:.4f}",
@@ -134,20 +133,19 @@ def train_model(
         
         with torch.no_grad():
             pbar_v = tqdm(val_loader, desc=f"Val {epoch+1}/{config['epochs']}", total=total_v, leave=False)
-            for batch_x, batch_y in pbar_v:
-                batch_x = batch_x.to(config['device'])
-                batch_y = batch_y.to(config['device'])
+            for batch in pbar_v:
+                batch = batch.to(config['device'])
                 
-                logits = model(batch_x)
+                logits = model(batch)
 
-                loss = criterion_v(logits, batch_y)
+                loss = criterion_v(logits, batch.y.float())
                 preds = torch.sigmoid(logits)
                 
-                batch_f1_v = binary_f1_score(preds, batch_y)
+                batch_f1_v = binary_f1_score(preds, batch.y.long())
                 
-                epoch_loss_v += loss.item() * batch_y.size(0)
-                epoch_f1_v += batch_f1_v * batch_y.size(0)
-                epoch_samples_v += batch_y.size(0)
+                epoch_loss_v += loss.item() * batch.y.size(0)
+                epoch_f1_v += batch_f1_v * batch.y.size(0)
+                epoch_samples_v += batch.y.size(0)
                 
                 pbar_v.set_postfix({
                     'loss': f"{epoch_loss_v/epoch_samples_v:.4f}",

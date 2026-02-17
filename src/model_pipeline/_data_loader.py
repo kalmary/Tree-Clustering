@@ -20,9 +20,7 @@ class BatchedGraphDataset(IterableDataset):
         base_dir: Union[str, pth.Path],
         graphs_per_batch: int = 8,
         shuffle: bool = True,
-        device: Optional[torch.device] = None,
-        normalize_edges: bool = False,
-        scaling_params: Optional[Dict[str, Any]] = None
+        device: Optional[torch.device] = None
     ):
         """
         Args:
@@ -38,24 +36,7 @@ class BatchedGraphDataset(IterableDataset):
         self.graphs_per_batch = graphs_per_batch
         self.shuffle = shuffle
         self.device = device
-        self.normalize_edges = normalize_edges
-        self.scaling_params = scaling_params
-        
-        # Precompute normalization tensors
-        if self.normalize_edges and self.scaling_params is not None:
-            means = torch.tensor(
-                self.scaling_params['standard_scaling']['means'],
-                dtype=torch.float32
-            )
-            stds = torch.tensor(
-                self.scaling_params['standard_scaling']['stds'],
-                dtype=torch.float32
-            )
-            self.edge_mean = means
-            self.edge_std = stds
-        else:
-            self.edge_mean = None
-            self.edge_std = None
+
 
     def _dict_to_data(self, graph_dict):
         """Convert dictionary to PyG Data object."""
@@ -94,11 +75,6 @@ class BatchedGraphDataset(IterableDataset):
                     graphs = [graph_data]
                 
                 for graph_dict in graphs:
-                    # Normalize edge features
-                    if self.normalize_edges and self.edge_mean is not None:
-                        graph_dict['edge_attr'] = (
-                            graph_dict['edge_attr'] - self.edge_mean
-                        ) / (self.edge_std + 1e-8)
                     
                     # Convert to PyG Data object
                     data = self._dict_to_data(graph_dict)

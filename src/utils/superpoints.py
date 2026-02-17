@@ -132,7 +132,7 @@ def _process_point_worker(i, neighbors_data, shm_visited_name, n_points, min_pts
 def build_superpoints_mp(points: np.ndarray,
                       chunk: int = 500,
                       radius: float = 0.2,
-                      voxel_factor: float = 0.7,
+                      voxel_factor: float = 0.75,
                       min_pts: int = 30,
                       max_pts: int = 300,
                       max_visits: int = -1,

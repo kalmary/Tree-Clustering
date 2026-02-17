@@ -1,0 +1,9 @@
+{
+    "node_feat_dim": 9,
+    "edge_feat_dim": 11,
+    "hidden_dim": 512,
+    "num_layers": 4,
+    "dropout": 0.25,
+    "gat_heads": 8,
+    "scaling_method": "robust"
+}

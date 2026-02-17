@@ -1,5 +1,9 @@
 {
-  "input_dim": 8,
-  "hidden_dims": [32, 16],
-  "dropout": 0.0
+    "node_feat_dim": 9,
+    "edge_feat_dim": 11,
+    "hidden_dim": 64,
+    "num_layers": 2,
+    "dropout": 0.15,
+    "gat_heads": 4,
+    "scaling_method": "robust"
 }
