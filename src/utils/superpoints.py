@@ -136,7 +136,6 @@ def build_superpoints_mp(points: np.ndarray,
                       min_pts: int = 30,
                       max_pts: int = 300,
                       max_visits: int = -1,
-                      max_superpoints: Optional[int] = 600,
                       verbose: bool = False,
                       n_jobs: int = -1):
     """
@@ -168,16 +167,6 @@ def build_superpoints_mp(points: np.ndarray,
     
     counts = np.bincount(inverse_indices, minlength=n_unique_voxels)
     voxel_centroids = voxel_sums / counts[:, None]
-
-    # ============================================
-    # STEP 2: Subsample voxel centroids (optional)
-    # ============================================
-    if max_superpoints is not None and n_unique_voxels > max_superpoints:
-        sampled_indices = np.random.choice(n_unique_voxels, size=max_superpoints, replace=False)
-        voxel_centroids = voxel_centroids[sampled_indices]
-        n_unique_voxels = max_superpoints
-        if verbose:
-            print(f"Subsampled voxel centroids: {n_unique_voxels} -> {max_superpoints}")
 
     # ============================================
     # STEP 3: Query neighbors
