@@ -7,7 +7,7 @@ from scipy.spatial import cKDTree
 from joblib import Parallel, delayed
 from multiprocessing import shared_memory, Lock
 from tqdm import tqdm
-from typing import Tuple
+from typing import Tuple, Optional
 import gc
 
 def build_superpoints(points: np.ndarray,
