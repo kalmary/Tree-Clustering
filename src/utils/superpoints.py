@@ -7,7 +7,7 @@ from scipy.spatial import cKDTree
 from joblib import Parallel, delayed
 from multiprocessing import shared_memory, Lock
 from tqdm import tqdm
-from typing import Tuple, Optional
+from typing import Tuple
 import gc
 
 def build_superpoints(points: np.ndarray,
@@ -136,7 +136,7 @@ def build_superpoints_mp(points: np.ndarray,
                       min_pts: int = 30,
                       max_pts: int = 300,
                       max_visits: int = -1,
-                      max_superpoints: Optional[int] = 1000,
+                      max_superpoints: Optional[int] = 600,
                       verbose: bool = False,
                       n_jobs: int = -1):
     """
@@ -176,6 +176,8 @@ def build_superpoints_mp(points: np.ndarray,
         sampled_indices = np.random.choice(n_unique_voxels, size=max_superpoints, replace=False)
         voxel_centroids = voxel_centroids[sampled_indices]
         n_unique_voxels = max_superpoints
+        if verbose:
+            print(f"Subsampled voxel centroids: {n_unique_voxels} -> {max_superpoints}")
 
     # ============================================
     # STEP 3: Query neighbors
