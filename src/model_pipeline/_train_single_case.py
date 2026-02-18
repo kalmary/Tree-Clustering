@@ -50,116 +50,125 @@ def train_model(
         num_workers=10,
         pin_memory=False
     )
+    try:
+        total_t = get_dataset_len(train_loader)
+        total_v = get_dataset_len(val_loader)
 
-    total_t = get_dataset_len(train_loader)
-    total_v = get_dataset_len(val_loader)
+        assert total_t > 0, "Training dataset is empty."
+        assert total_v > 0, "Validation dataset is empty."
+        
+        weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=False, return_pos_weight=True)
+        weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=False, return_pos_weight=True)
 
-    assert total_t > 0, "Training dataset is empty."
-    assert total_v > 0, "Validation dataset is empty."
-    
-    weights_t = calculate_binary_weights(train_loader, total=total_t, verbose=False, return_pos_weight=True)
-    weights_v = calculate_binary_weights(val_loader, total=total_v, verbose=False, return_pos_weight=True)
+        model = EdgeClassifierGNN(config['model_config'], scaling_params=config['scaling_config'])
+        model.to(config['device'])
+        
+        weights_t = torch.tensor(weights_t, dtype=torch.float32).to(config['device'])
+        weights_v = torch.tensor(weights_v, dtype=torch.float32).to(config['device'])
 
-    model = EdgeClassifierGNN(config['model_config'], scaling_params=config['scaling_config'])
-    model.to(config['device'])
-    
-    weights_t = torch.tensor(weights_t, dtype=torch.float32).to(config['device'])
-    weights_v = torch.tensor(weights_v, dtype=torch.float32).to(config['device'])
+        criterion_t = FocalLossBCE(pos_weight=weights_t, gamma = config['focal_gamma']).to(config['device'])
+        criterion_v = FocalLossBCE(pos_weight=weights_v, gamma = config['focal_gamma']).to(config['device'])
+        
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=config['learning_rate'],
+            weight_decay=config['weight_decay']
+        )
 
-    criterion_t = FocalLossBCE(pos_weight=weights_t, gamma = config['focal_gamma']).to(config['device'])
-    criterion_v = FocalLossBCE(pos_weight=weights_v, gamma = config['focal_gamma']).to(config['device'])
-    
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=config['learning_rate'],
-        weight_decay=config['weight_decay']
-    )
-
-    scheduler = OneCycleLR(
-        optimizer,
-        max_lr=config['learning_rate'],
-        total_steps=total_t*config['epochs'],
-        pct_start=config['pct_start'],
-        anneal_strategy='cos',
-        div_factor=config['div_factor'],
-        final_div_factor=config['final_div_factor']
-    )
-    
-    loss_hist, f1_hist = [], []
-    loss_v_hist, f1_v_hist = [], []
-    
-    for epoch in tqdm(range(config['epochs']), desc="Epochs"):
+        scheduler = OneCycleLR(
+            optimizer,
+            max_lr=config['learning_rate'],
+            total_steps=total_t*config['epochs'],
+            pct_start=config['pct_start'],
+            anneal_strategy='cos',
+            div_factor=config['div_factor'],
+            final_div_factor=config['final_div_factor']
+        )
         
-        # Training
-        model.train()
-        epoch_loss, epoch_f1, epoch_samples = 0.0, 0.0, 0
+        loss_hist, f1_hist = [], []
+        loss_v_hist, f1_v_hist = [], []
         
-        pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{config['epochs']}", total=total_t, leave=False)
-        for batch in pbar:
-            batch = batch.to(config['device'])
+        for epoch in tqdm(range(config['epochs']), desc="Epochs"):
             
-            logits = model(batch)
-            loss = criterion_t(logits, batch.y.float())
+            # Training
+            model.train()
+            epoch_loss, epoch_f1, epoch_samples = 0.0, 0.0, 0
             
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            try:
-                scheduler.step()
-            except Exception:
-                pass
-            
-            preds = torch.sigmoid(logits)
-            
-            batch_f1 = binary_f1_score(preds, batch.y.long())
-            
-            epoch_loss += loss.item() * batch.y.size(0)
-            epoch_f1 += batch_f1 * batch.y.size(0)
-            epoch_samples += batch.y.size(0)
-            
-            pbar.set_postfix({
-                'loss': f"{epoch_loss/epoch_samples:.4f}",
-                'f1': f"{epoch_f1/epoch_samples:.4f}",
-                'lr': f"{optimizer.param_groups[0]['lr']:.2e}"
-            })
-        
-        loss_hist.append(epoch_loss / epoch_samples)
-        f1_hist.append(epoch_f1 / epoch_samples)
-        
-        # Validation
-        model.eval()
-        epoch_loss_v, epoch_f1_v, epoch_samples_v = 0.0, 0.0, 0
-        
-        with torch.no_grad():
-            pbar_v = tqdm(val_loader, desc=f"Val {epoch+1}/{config['epochs']}", total=total_v, leave=False)
-            for batch in pbar_v:
+            pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{config['epochs']}", total=total_t, leave=False)
+            for batch in pbar:
                 batch = batch.to(config['device'])
                 
                 logits = model(batch)
-
-                loss = criterion_v(logits, batch.y.float())
+                loss = criterion_t(logits, batch.y.float())
+                
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                try:
+                    scheduler.step()
+                except Exception:
+                    pass
+                
                 preds = torch.sigmoid(logits)
                 
-                batch_f1_v = binary_f1_score(preds, batch.y.long())
+                batch_f1 = binary_f1_score(preds, batch.y.long())
                 
-                epoch_loss_v += loss.item() * batch.y.size(0)
-                epoch_f1_v += batch_f1_v * batch.y.size(0)
-                epoch_samples_v += batch.y.size(0)
+                epoch_loss += loss.item() * batch.y.size(0)
+                epoch_f1 += batch_f1 * batch.y.size(0)
+                epoch_samples += batch.y.size(0)
                 
-                pbar_v.set_postfix({
-                    'loss': f"{epoch_loss_v/epoch_samples_v:.4f}",
-                    'f1': f"{epoch_f1_v/epoch_samples_v:.4f}"
+                pbar.set_postfix({
+                    'loss': f"{epoch_loss/epoch_samples:.4f}",
+                    'f1': f"{epoch_f1/epoch_samples:.4f}",
+                    'lr': f"{optimizer.param_groups[0]['lr']:.2e}"
                 })
-        
-        loss_v_hist.append(epoch_loss_v / epoch_samples_v)
-        f1_v_hist.append(epoch_f1_v / epoch_samples_v)
-        
-        hist_dict = {
-            'loss_hist': loss_hist,
-            'f1_hist': f1_hist,
-            'loss_v_hist': loss_v_hist,
-            'f1_v_hist': f1_v_hist
-        }
-        
-        yield model, hist_dict
+            
+            loss_hist.append(epoch_loss / epoch_samples)
+            f1_hist.append(epoch_f1 / epoch_samples)
+            
+            # Validation
+            model.eval()
+            epoch_loss_v, epoch_f1_v, epoch_samples_v = 0.0, 0.0, 0
+            
+            with torch.no_grad():
+                pbar_v = tqdm(val_loader, desc=f"Val {epoch+1}/{config['epochs']}", total=total_v, leave=False)
+                for batch in pbar_v:
+                    batch = batch.to(config['device'])
+                    
+                    logits = model(batch)
+
+                    loss = criterion_v(logits, batch.y.float())
+                    preds = torch.sigmoid(logits)
+                    
+                    batch_f1_v = binary_f1_score(preds, batch.y.long())
+                    
+                    epoch_loss_v += loss.item() * batch.y.size(0)
+                    epoch_f1_v += batch_f1_v * batch.y.size(0)
+                    epoch_samples_v += batch.y.size(0)
+                    
+                    pbar_v.set_postfix({
+                        'loss': f"{epoch_loss_v/epoch_samples_v:.4f}",
+                        'f1': f"{epoch_f1_v/epoch_samples_v:.4f}"
+                    })
+            
+            loss_v_hist.append(epoch_loss_v / epoch_samples_v)
+            f1_v_hist.append(epoch_f1_v / epoch_samples_v)
+            
+            hist_dict = {
+                'loss_hist': loss_hist,
+                'f1_hist': f1_hist,
+                'loss_v_hist': loss_v_hist,
+                'f1_v_hist': f1_v_hist
+            }
+            
+            yield model, hist_dict
+
+    except Exception as e:
+        print(f"Error during training: {e}")
+        try:
+            del model
+        except Exception as e:
+            pass
+        torch.cuda.empty_cache()
+        yield None, {}
