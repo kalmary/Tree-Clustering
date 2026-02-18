@@ -197,5 +197,5 @@ if __name__ == "__main__":
                 split=split,
                 dry_run=False,
                 backup=False,
-                min_minority_ratio=0.2
+                min_minority_ratio=0.1
             )
