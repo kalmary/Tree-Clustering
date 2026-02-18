@@ -28,7 +28,7 @@ def train_model(
         graphs_per_batch=config['batch_size'],
         shuffle=True,
         device=torch.device('cpu'),
-        max_nodes=300,
+        max_nodes=600,
         positive_bias=0.5
     )
     
@@ -44,7 +44,7 @@ def train_model(
         graphs_per_batch=config['batch_size'],
         shuffle=False,
         device=torch.device('cpu'),
-        max_nodes=300,
+        max_nodes=600,
         positive_bias=0.0
     )
     
