@@ -15,12 +15,11 @@ from utils.graph import edge_labels_binary, build_edges_mp, build_edges
 from utils.edge_features import edge_features_vectorized
 
 
-def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroid_array, voxel_assignments, verbose=False):
+def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroid_array, voxel_assignments, max_nodes=None, verbose=False):
     """
     Split graph data (as numpy arrays) into multiple smaller graphs based on voxel assignments.
     Yields torch tensor subgraphs ready to save.
     """
-    # Count non-empty voxels first
     non_empty_voxels = [v for v in voxel_assignments if len(v) > 0]
     
     iterator = non_empty_voxels
@@ -31,7 +30,6 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroi
                        position=1)
     
     for edge_indices in iterator:
-        # Extract edges for this voxel (numpy indexing)
         voxel_edges = edges[edge_indices]
         voxel_edge_feats = edge_feats[edge_indices]
         voxel_edge_labels = edge_labels[edge_indices]
@@ -39,32 +37,47 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features, centroi
         if np.unique(voxel_edge_labels).shape[0] < 2:
             continue
         
-        # Get unique nodes
         unique_nodes = np.unique(voxel_edges)
-        
+
+        # Subsample nodes if exceeding max_nodes
+        if max_nodes is not None and len(unique_nodes) > max_nodes:
+            unique_nodes = unique_nodes[np.random.choice(len(unique_nodes), size=max_nodes, replace=False)]
+
+            # Keep only edges where both endpoints survived
+            node_set = np.zeros(node_features.shape[0], dtype=bool)
+            node_set[unique_nodes] = True
+            edge_keep_mask = node_set[voxel_edges[:, 0]] & node_set[voxel_edges[:, 1]]
+
+            voxel_edges = voxel_edges[edge_keep_mask]
+            voxel_edge_feats = voxel_edge_feats[edge_keep_mask]
+            voxel_edge_labels = voxel_edge_labels[edge_keep_mask]
+
+            if len(voxel_edges) == 0:
+                continue
+
+            if np.unique(voxel_edge_labels).shape[0] < 2:
+                continue
+
+            # Recompute unique nodes from surviving edges to stay consistent
+            unique_nodes = np.unique(voxel_edges)
+
         # Create node mapping (global -> local)
         node_mapping = np.full(node_features.shape[0], -1, dtype=np.int64)
         node_mapping[unique_nodes] = np.arange(len(unique_nodes))
         
-        # Remap edges to local indices
         local_edges = node_mapping[voxel_edges]
         
-        # Extract node features
         voxel_x = node_features[unique_nodes]
         voxel_pos = centroid_array[unique_nodes]
         
-        # Convert to torch tensors
         edge_index = torch.tensor(local_edges.T, dtype=torch.long)
         edge_attr = torch.tensor(voxel_edge_feats, dtype=torch.float32)
         y = torch.tensor(voxel_edge_labels, dtype=torch.long)
-
         x = torch.tensor(voxel_x, dtype=torch.float32)
         pos = torch.tensor(voxel_pos, dtype=torch.float32)
         
-        # Make undirected
         edge_index, [edge_attr, y] = to_undirected(edge_index, [edge_attr, y])
         
-        # Create subgraph
         subgraph = {
             'x': x,
             'edge_index': edge_index,
@@ -202,6 +215,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path, use_mp: bool = False, rad
                                                     node_features,
                                                     centroid_array,
                                                     voxel_assignments,
+                                                    max_nodes=600,
                                                     verbose=verbose)):
         out_path = output_path.parent / f"{output_path.stem}_{i}_{output_path.suffix}"
         torch.save(graph, out_path)
