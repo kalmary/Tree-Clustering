@@ -176,8 +176,6 @@ def build_superpoints_mp(points: np.ndarray,
         sampled_indices = np.random.choice(n_unique_voxels, size=max_superpoints, replace=False)
         voxel_centroids = voxel_centroids[sampled_indices]
         n_unique_voxels = max_superpoints
-        if verbose:
-            print(f"Subsampled voxel centroids: {n_unique_voxels} -> {max_superpoints}")
 
     # ============================================
     # STEP 3: Query neighbors
