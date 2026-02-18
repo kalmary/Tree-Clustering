@@ -136,10 +136,17 @@ def build_superpoints_mp(points: np.ndarray,
                       min_pts: int = 30,
                       max_pts: int = 300,
                       max_visits: int = -1,
+                      max_superpoints: Optional[int] = 600,
                       verbose: bool = False,
                       n_jobs: int = -1):
     """
     Parallel version - optimized.
+    
+    Args:
+        ...
+        max_superpoints: If set, randomly subsample voxel centroids to this
+                         number before querying neighbors. Reduces computation
+                         for very dense clouds.
     """
     if n_jobs == -1:
         from joblib import cpu_count
@@ -149,7 +156,7 @@ def build_superpoints_mp(points: np.ndarray,
     tree = cKDTree(points)
     
     # ============================================
-    # STEP 1: Build neighbors array
+    # STEP 1: Build voxel centroids
     # ============================================
     voxel_size = radius * voxel_factor 
 
@@ -162,6 +169,19 @@ def build_superpoints_mp(points: np.ndarray,
     counts = np.bincount(inverse_indices, minlength=n_unique_voxels)
     voxel_centroids = voxel_sums / counts[:, None]
 
+    # ============================================
+    # STEP 2: Subsample voxel centroids (optional)
+    # ============================================
+    if max_superpoints is not None and n_unique_voxels > max_superpoints:
+        sampled_indices = np.random.choice(n_unique_voxels, size=max_superpoints, replace=False)
+        voxel_centroids = voxel_centroids[sampled_indices]
+        n_unique_voxels = max_superpoints
+        if verbose:
+            print(f"Subsampled voxel centroids: {n_unique_voxels} -> {max_superpoints}")
+
+    # ============================================
+    # STEP 3: Query neighbors
+    # ============================================
     neighbors = []
     if verbose:
         pbar = tqdm(range(0, n_unique_voxels, chunk), desc="Querying neighborhoods", leave=False, position=1)
@@ -174,7 +194,7 @@ def build_superpoints_mp(points: np.ndarray,
         neighbors.extend(batch_neighbors)
     
     # ============================================
-    # STEP 2: Filter by density
+    # STEP 4: Filter by density
     # ============================================
     dense_indices = [i for i in range(n_unique_voxels) if len(neighbors[i]) >= min_pts]
     
@@ -182,7 +202,7 @@ def build_superpoints_mp(points: np.ndarray,
         return [], []
     
     # ============================================
-    # STEP 3: Create shared memory (only if max_visits != -1)
+    # STEP 5: Create shared memory (only if max_visits != -1)
     # ============================================
     shm_visited = None
     visited = None
@@ -198,7 +218,7 @@ def build_superpoints_mp(points: np.ndarray,
     
     try:
         # ============================================
-        # STEP 4: Process in parallel
+        # STEP 6: Process in parallel
         # ============================================
         shm_name = shm_visited.name if max_visits != -1 else None
         
@@ -217,14 +237,14 @@ def build_superpoints_mp(points: np.ndarray,
         )
         
         # ============================================
-        # STEP 5: Collect results (no extra iteration)
+        # STEP 7: Collect results
         # ============================================
         superpoints = []
         seed_indices = []
         
         for sp, seed in results:
             if sp is not None:
-                superpoints.append(sp)  # Already numpy array
+                superpoints.append(sp)
                 seed_indices.append(seed)
         
         return superpoints, seed_indices
