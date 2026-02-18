@@ -43,6 +43,13 @@ class FocalLossBCE(nn.Module):
             self.bce = nn.BCEWithLogitsLoss(reduction='none', pos_weight=torch.tensor(pos_weight))
 
     def forward(self, inputs, targets):
+        assert not inputs.isnan().any(), "NaN in inputs"
+        assert not inputs.isinf().any(), "Inf in inputs"
+        assert targets.min() >= 0 and targets.max() <= 1, "Bad target values"
+
+        inputs = inputs.float()
+        inputs = inputs.float()
+
         bce_loss = self.bce(inputs, targets)
         pt = torch.exp(-bce_loss)
         focal_loss = (1-pt)**self.gamma * bce_loss

@@ -826,7 +826,7 @@ def main():
     elif args.mode == 2:
         optuna_based_training(exp_config=exp_configs,
                               model_name=model_name,
-                              n_trials=80)
+                              n_trials=100)
     elif args.mode == 3:
         model_configs_dir = base_path.joinpath('model_configs')
         model_configs_paths_list = list(model_configs_dir.rglob('*.json'))
