@@ -63,11 +63,11 @@ def train_model(
         model = EdgeClassifierGNN(config['model_config'], scaling_params=config['scaling_config'])
         model.to(config['device'])
         
-        weights_t = torch.tensor(weights_t, dtype=torch.float32).to(config['device'])
-        weights_v = torch.tensor(weights_v, dtype=torch.float32).to(config['device'])
+        weights_t = torch.tensor(weights_t, dtype=torch.float32).to(torch.device("cpu"))
+        weights_v = torch.tensor(weights_v, dtype=torch.float32).to(torch.device("cpu"))
 
-        criterion_t = FocalLossBCE(pos_weight=weights_t, gamma = config['focal_gamma']).to(config['device'])
-        criterion_v = FocalLossBCE(pos_weight=weights_v, gamma = config['focal_gamma']).to(config['device'])
+        criterion_t = FocalLossBCE(pos_weight=weights_t, gamma = config['focal_gamma']).to(torch.device("cpu"))
+        criterion_v = FocalLossBCE(pos_weight=weights_v, gamma = config['focal_gamma']).to(torch.device("cpu"))
         
         optimizer = optim.AdamW(
             model.parameters(),
@@ -99,6 +99,10 @@ def train_model(
                 batch = batch.to(config['device'])
                 
                 logits = model(batch)
+
+                logits = logits.cpu()
+                batch = batch.cpu()
+
                 loss = criterion_t(logits, batch.y.float())
                 
                 optimizer.zero_grad()
@@ -137,6 +141,9 @@ def train_model(
                     batch = batch.to(config['device'])
                     
                     logits = model(batch)
+
+                    logits = logits.cpu()
+                    batch = batch.cpu()
 
                     loss = criterion_v(logits, batch.y.float())
                     preds = torch.sigmoid(logits)
