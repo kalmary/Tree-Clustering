@@ -114,7 +114,7 @@ def train_model(
                 except Exception:
                     pass
                 
-                preds = torch.sigmoid(logits)
+                preds = torch.sigmoid(logits.detach())
                 
                 batch_f1 = binary_f1_score(preds, batch.y.long())
                 
