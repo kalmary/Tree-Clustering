@@ -136,7 +136,7 @@ def build_superpoints_mp(points: np.ndarray,
                       min_pts: int = 30,
                       max_pts: int = 300,
                       max_visits: int = -1,
-                      max_superpoints: Optional[int] = 600,
+                      max_superpoints: Optional[int] = 1000,
                       verbose: bool = False,
                       n_jobs: int = -1):
     """
