@@ -18,6 +18,10 @@ from tqdm import tqdm
 
 from final_files.EdgeGNN import EdgeClassifierGNN
 from utils import load_json, load_model
+from utils.instance_segmentation_evaluation import evaluate_segmentation
+
+from itertools import product
+from pprint import pprint
 
 
 class TreeSegmGNN:
@@ -30,6 +34,7 @@ class TreeSegmGNN:
                  voxel_factor: float = 0.78,
                  max_nodes: int = 600,
                  edge_threshold: float = 0.5,
+                 high_threshold: float = 0.6,
                  verbose: bool = False):
 
         if model_name is None:
@@ -45,6 +50,7 @@ class TreeSegmGNN:
         self.voxel_factor = voxel_factor
         self.max_nodes = max_nodes
         self.edge_threshold = edge_threshold
+        self.high_threshold = high_threshold
         self.verbose = verbose
 
         self.base_path = pth.Path(__file__).parent
@@ -222,14 +228,63 @@ class TreeSegmGNN:
     @torch.no_grad()
     def _predict_subgraph(self, data: Data) -> np.ndarray:
         data  = data.to(self.device)
-        probs = torch.sigmoid(self.model(data).squeeze(-1))
-        return probs.cpu().numpy()
+        output = self.model(data).squeeze(-1)
+        output = torch.sigmoid(output)
+        return output.cpu().numpy()
+
+    def _connect_floating_clusters(self, point_labels: np.ndarray, xyz: np.ndarray,
+                                    ground_z_threshold: float = 0.5,
+                                    min_cluster_size: int = 5000) -> np.ndarray:
+        """
+        Connects floating clusters to grounded ones based on centroid proximity.
+        A good cluster: touches the ground (lowest point within ground_z_threshold of min z)
+                        OR has more than min_cluster_size points.
+        A bad (floating) cluster is connected to the nearest good cluster centroid.
+        """
+        min_z = xyz[:, 2].min()
+        unique_labels = np.unique(point_labels)
+
+        grounded = []
+        floating = []
+
+        for lbl in unique_labels:
+            mask = point_labels == lbl
+            cluster_pts = xyz[mask]
+            is_large = mask.sum() >= min_cluster_size
+            is_grounded = cluster_pts[:, 2].min() <= min_z + ground_z_threshold
+            if is_grounded or is_large:
+                grounded.append(lbl)
+            else:
+                floating.append(lbl)
+
+        if len(floating) == 0 or len(grounded) == 0:
+            return point_labels
+
+        grounded_centroids = np.array([
+            xyz[point_labels == lbl].mean(axis=0) for lbl in grounded
+        ], dtype=np.float32)
+        floating_centroids = np.array([
+            xyz[point_labels == lbl].mean(axis=0) for lbl in floating
+        ], dtype=np.float32)
+
+        grounded = np.array(grounded)
+        floating = np.array(floating)
+
+        tree = cKDTree(grounded_centroids)
+        _, nn = tree.query(floating_centroids, k=1)
+
+        point_labels_cluster = point_labels.copy()
+        for i, lbl in enumerate(floating):
+            point_labels_cluster[point_labels_cluster == lbl] = grounded[nn[i]]
+
+        return point_labels_cluster
 
     def segment(self, xyz: np.ndarray) -> np.ndarray:
         """
         Raw XYZ (N, 3) → per-point integer tree instance labels (N,).
-        Every point is guaranteed a label via its superpoint's UF root,
-        regardless of which subgraphs it appeared in.
+        Noise points (not in any superpoint) are assigned via nearest centroid.
+        Overlapping superpoint membership is resolved by majority vote.
+        Two-pass union-find: high-confidence edges first, then extend only.
         """
         sp_indices, centroid_array, pca_dir_array, sp_features = \
             self._build_superpoint_arrays(xyz)
@@ -253,7 +308,6 @@ class TreeSegmGNN:
         )
 
         # --- per-edge voting across overlapping voxels ---
-
         vote_sum   = defaultdict(float)
         vote_count = defaultdict(int)
 
@@ -261,7 +315,7 @@ class TreeSegmGNN:
                 edges, edge_feats, node_features, centroid_array, voxel_assignments):
 
             probs     = self._predict_subgraph(data)
-            global_ei = unique_nodes[local_ei.cpu().numpy()]   # (2, E)
+            global_ei = unique_nodes[local_ei.cpu().numpy()]
 
             for k in range(global_ei.shape[1]):
                 u, v = int(global_ei[0, k]), int(global_ei[1, k])
@@ -269,44 +323,68 @@ class TreeSegmGNN:
                 vote_sum[key]   += float(probs[k])
                 vote_count[key] += 1
 
-        # --- union-find on mean-voted edges ---
-
+        # --- union-find on mean-voted edges, two-pass thresholding ---
         n_sp = len(sp_indices)
         uf   = UnionFind(n_sp)
+
+        # pass 1: merge only very high confidence edges
         for (u, v), total in vote_sum.items():
-            if total / vote_count[(u, v)] >= self.edge_threshold:
+            if (total / vote_count[(u, v)]) >= self.high_threshold:
                 uf.union(u, v)
 
-        # Resolve all roots up front so each sp_id has a stable cluster label.
+        # snapshot cluster sizes after pass 1
+        roots_p1        = np.array([uf.find(i) for i in range(n_sp)])
+        cluster_size_p1 = np.bincount(roots_p1, minlength=n_sp)
+
+        # pass 2: extend existing confident clusters only
+        for (u, v), total in vote_sum.items():
+            count      = vote_count[(u, v)]
+            mean_score = total / count
+            if mean_score >= self.edge_threshold and mean_score < self.high_threshold:
+                root_u = uf.find(u)
+                root_v = uf.find(v)
+                if root_u == root_v:
+                    continue
+                if cluster_size_p1[root_u] > 1 or cluster_size_p1[root_v] > 1:
+                    uf.union(u, v)
+
         sp_labels = np.array([uf.find(i) for i in range(n_sp)], dtype=np.int64)
 
         # --- propagate labels from non-singleton SPs to isolated ones ---
-        # A superpoint is a singleton if it was never merged with anyone,
-        # i.e. its cluster label equals its own index (it is its own root
-        # AND no other node was merged into it).
-        # We detect true singletons: nodes whose cluster contains only themselves.
         cluster_size = np.bincount(sp_labels, minlength=n_sp)
-        is_singleton = cluster_size[sp_labels] == 1  # (n_sp,) bool
+        is_singleton = cluster_size[sp_labels] == 1
 
         n_singletons = is_singleton.sum()
         if n_singletons > 0 and n_singletons < n_sp:
+            labeled_idx   = np.where(~is_singleton)[0]
+            singleton_idx = np.where(is_singleton)[0]
 
-            labeled_mask    = ~is_singleton
-            labeled_idx     = np.where(labeled_mask)[0]
-            singleton_idx   = np.where(is_singleton)[0]
-
-            tree = cKDTree(centroid_array[labeled_idx])
-            _, nn_pos = tree.query(centroid_array[singleton_idx], k=1, workers=-1)
-
-            # Assign the singleton the cluster label of its nearest non-singleton SP
+            sp_tree = cKDTree(centroid_array[labeled_idx])
+            _, nn_pos = sp_tree.query(centroid_array[singleton_idx], k=1, workers=-1)
             sp_labels[singleton_idx] = sp_labels[labeled_idx[nn_pos]]
 
-        # --- back-project SP labels to raw points ---
-        # Every raw point belongs to exactly one superpoint via sp_indices,
-        # so this loop covers 100% of points with no gaps or -1s.
-        point_labels = np.empty(len(xyz), dtype=np.int64)
+        # --- back-project SP labels to raw points via majority vote ---
+        point_votes = defaultdict(list)
         for sp_id, idx in enumerate(sp_indices):
-            point_labels[idx] = sp_labels[sp_id]
+            label = sp_labels[sp_id]
+            for pt in idx:
+                point_votes[pt].append(label)
+
+        point_labels = np.full(len(xyz), -1, dtype=np.int64)
+        for pt, votes in point_votes.items():
+            unique_labels, counts = np.unique(votes, return_counts=True)
+            point_labels[pt] = unique_labels[np.argmax(counts)]
+
+        # --- fallback for noise points not in any superpoint ---
+        unassigned_mask = point_labels == -1
+        if unassigned_mask.any():
+            pt_tree = cKDTree(centroid_array)
+            _, nn = pt_tree.query(xyz[unassigned_mask], k=1, workers=-1)
+            point_labels[unassigned_mask] = sp_labels[nn]
+
+        point_labels[point_labels != -1] = np.unique(
+            point_labels[point_labels != -1], return_inverse=True
+        )[1]
 
         return point_labels
 
@@ -318,24 +396,59 @@ class TreeSegmGNN:
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    edge_threshold_range = np.arange(0.2, 0.7, 0.1)
+    high_threshold_range = np.arange(0.6, 0.9, 0.1)
+
+    combination = product(edge_threshold_range, high_threshold_range)
+
+    best_edge_threshold = None
+    best_high_threshold = None
+    best_PQ = -1.0
+
+    for edge_threshold, high_threshold in combination:
+        segmenter = TreeSegmGNN(
+            model_name="EdgeGNN_2",          # without .pt
+            device=device,
+            use_mp=True,
+            radius=1.5,
+            voxel_factor=0.78,
+            max_nodes=600,
+            edge_threshold=edge_threshold,
+            high_threshold=high_threshold,
+            verbose=True,
+        )
+
+        cloud  = np.load("data/split/train/A1N_trees_000001.npy")
+        original_labels = cloud[:, -1].astype(np.int32)
+        labels = segmenter.segment(cloud[:, :3])
+        # print("Unique tree IDs:", np.unique(labels), "| shape:", labels.shape)
+
+        # from utils.plot_cloud import plot_cloud
+        # plot_cloud(cloud[:, :3], labels)
+        metrics = evaluate_segmentation(labels, original_labels)
+        pprint(f"{'-'*60}\nEdge threshold: {edge_threshold:.2f}, High threshold: {high_threshold:.2f}\nMetrics:\n{metrics}\n{'-'*60}\n")
+        del segmenter
+
+        if best_edge_threshold is None or metrics['PQ'] > best_PQ:
+            best_edge_threshold = edge_threshold
+            best_high_threshold = high_threshold
+            best_PQ = metrics['PQ']
+
+    print(f"Best edge threshold: {best_edge_threshold:.2f}, Best high threshold: {best_high_threshold:.2f}, Best PQ: {best_PQ:.4f}")
+
     segmenter = TreeSegmGNN(
-        model_name="EdgeGNN_2",          # without .pt
-        device=device,
-        use_mp=True,
-        radius=1.5,
-        voxel_factor=0.78,
-        max_nodes=600,
-        edge_threshold=0.5,
-        verbose=True,
-    )
-
-    cloud  = np.load("data/split/train/A1N_trees_000001.npy")
-    labels = segmenter.segment(cloud[:, :3])
-    print("Unique tree IDs:", np.unique(labels), "| shape:", labels.shape)
-
+            model_name="EdgeGNN_2",          # without .pt
+            device=device,
+            use_mp=True,
+            radius=1.5,
+            voxel_factor=0.78,
+            max_nodes=600,
+            edge_threshold=best_edge_threshold,
+            high_threshold=best_high_threshold,
+            verbose=True,
+        )
     from utils.plot_cloud import plot_cloud
     plot_cloud(cloud[:, :3], labels)
-
 
 if __name__ == "__main__":
     main()
