@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import pathlib as pth
 from collections import defaultdict
+from typing import Union
+from scipy.spatial import cKDTree
 
 from torch_geometric.data import Data
 from torch_geometric.utils import to_undirected
@@ -14,10 +16,14 @@ from utils.edge_features import edge_features_vectorized
 from utils.structures import UnionFind
 from tqdm import tqdm
 
+from final_files.EdgeGNN import EdgeClassifierGNN
+from utils import load_json, load_model
+
 
 class TreeSegmGNN:
     def __init__(self,
-                 model: nn.Module,
+                 model_name: str,
+                 config_dir: Union[str, pth.Path] = "./final_files",
                  device: torch.device = torch.device('cpu'),
                  use_mp: bool = True,
                  radius: float = 1.5,
@@ -25,15 +31,60 @@ class TreeSegmGNN:
                  max_nodes: int = 600,
                  edge_threshold: float = 0.5,
                  verbose: bool = False):
-        self.model = model.to(device)
-        self.model.eval()
+
+        if model_name is None:
+            raise ValueError("model_name cannot be None")
+        self.model_name = model_name + '.pt'
+
+        if isinstance(device, str):
+            device = torch.device(device)
         self.device = device
+
         self.use_mp = use_mp
         self.radius = radius
         self.voxel_factor = voxel_factor
         self.max_nodes = max_nodes
         self.edge_threshold = edge_threshold
         self.verbose = verbose
+
+        self.base_path = pth.Path(__file__).parent
+        config_dir = self.base_path.joinpath("final_files")
+
+        self._model_config = self._load_config(config_dir=config_dir)
+        self._model = self._load_model(config_dir)
+
+    def _load_config(self, config_dir: Union[pth.Path, str]) -> dict:
+        config_dir = pth.Path(config_dir)
+
+        # Load model architecture config
+        config_path = config_dir.joinpath(self.model_name.replace('.pt', '_config.json'))
+        config_dict = load_json(config_path)
+        self._model_config: dict = config_dict['model_config']
+
+        # Load scaling params (scaling_params_train.json in final_files)
+        scaling_path = config_dir.joinpath("scaling_params_train.json")
+        self._model_config["scaling_config"] = load_json(scaling_path)
+
+        return config_dict
+
+    def _load_model(self, model_dir: Union[pth.Path, str]) -> nn.Module:
+        path2model = pth.Path(model_dir).joinpath(self.model_name)
+        model = EdgeClassifierGNN(self._model_config["model_config"], self._model_config["scaling_config"])
+        self._model: nn.Module = load_model(
+            file_path=path2model,
+            model=model,
+            device=self.device
+        )
+        self._model.eval()
+        return self._model
+
+    @property
+    def model_config(self) -> dict:
+        return self._model_config
+
+    @property
+    def model(self) -> nn.Module:
+        return self._model
 
     def _build_superpoint_arrays(self, xyz: np.ndarray):
         """
@@ -180,8 +231,6 @@ class TreeSegmGNN:
         Every point is guaranteed a label via its superpoint's UF root,
         regardless of which subgraphs it appeared in.
         """
-        if self.verbose:
-            print("Building superpoints and extracting features...")
         sp_indices, centroid_array, pca_dir_array, sp_features = \
             self._build_superpoint_arrays(xyz)
 
@@ -190,8 +239,6 @@ class TreeSegmGNN:
 
         node_features = self._build_node_features(centroid_array, sp_features)
 
-        if self.verbose:
-            print("Building edges...")
         edges, voxel_assignments = build_edges(
             centroids=centroid_array,
             radius=self.radius,
@@ -206,8 +253,6 @@ class TreeSegmGNN:
         )
 
         # --- per-edge voting across overlapping voxels ---
-        if self.verbose:
-            print("Running GNN inference with edge voting...")
 
         vote_sum   = defaultdict(float)
         vote_count = defaultdict(int)
@@ -225,9 +270,6 @@ class TreeSegmGNN:
                 vote_count[key] += 1
 
         # --- union-find on mean-voted edges ---
-        if self.verbose:
-            print(f"Merging over {len(vote_sum)} unique edges "
-                  f"(threshold={self.edge_threshold})...")
 
         n_sp = len(sp_indices)
         uf   = UnionFind(n_sp)
@@ -248,10 +290,7 @@ class TreeSegmGNN:
 
         n_singletons = is_singleton.sum()
         if n_singletons > 0 and n_singletons < n_sp:
-            if self.verbose:
-                print(f"Propagating labels to {n_singletons} isolated superpoints "
-                      f"via nearest neighbour...")
-            from scipy.spatial import cKDTree
+
             labeled_mask    = ~is_singleton
             labeled_idx     = np.where(labeled_mask)[0]
             singleton_idx   = np.where(is_singleton)[0]
@@ -277,20 +316,10 @@ class TreeSegmGNN:
 # ---------------------------------------------------------------------------
 
 def main():
-    import sys
-    sys.path.insert(0, str(pth.Path(__file__).parent.parent))
-
-    from your_model_module import YourGNNModel   # ← replace with your actual import
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = YourGNNModel(...)
-    checkpoint = torch.load('path/to/your/model.pt', map_location=device)
-    model.load_state_dict(checkpoint)
-    model.eval()
-
     segmenter = TreeSegmGNN(
-        model=model,
+        model_name="EdgeGNN_2",          # without .pt
         device=device,
         use_mp=True,
         radius=1.5,
@@ -300,9 +329,12 @@ def main():
         verbose=True,
     )
 
-    cloud  = np.load("data/split/test/some_cloud.npy")
+    cloud  = np.load("data/split/train/A1N_trees_000001.npy")
     labels = segmenter.segment(cloud[:, :3])
     print("Unique tree IDs:", np.unique(labels), "| shape:", labels.shape)
+
+    from utils.plot_cloud import plot_cloud
+    plot_cloud(cloud[:, :3], labels)
 
 
 if __name__ == "__main__":
