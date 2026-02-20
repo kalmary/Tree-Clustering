@@ -28,14 +28,14 @@ def train_model(
         graphs_per_batch=config['batch_size'],
         shuffle=True,
         device=torch.device('cpu'),
-        max_nodes=600,
+        max_nodes=300,
         positive_bias=0.5
     )
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,
-        num_workers=10,
+        num_workers=16,
         pin_memory=False
     )
 
@@ -44,14 +44,14 @@ def train_model(
         graphs_per_batch=config['batch_size'],
         shuffle=False,
         device=torch.device('cpu'),
-        max_nodes=600,
+        max_nodes=300,
         positive_bias=0.0
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=None,
-        num_workers=10,
+        num_workers=16,
         pin_memory=False
     )
     try:

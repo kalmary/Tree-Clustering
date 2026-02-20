@@ -3,66 +3,65 @@ import numpy as np
 
 def evaluate_segmentation(pred_labels: np.ndarray, gt_labels: np.ndarray) -> dict:
     """
-    Evaluates instance segmentation quality between predicted and ground truth labels.
-    Uses Hungarian matching to handle arbitrary label permutations.
-
-    Metrics:
-        - Panoptic Quality (PQ) = SQ * RQ
-        - Segmentation Quality (SQ): mean IoU of matched pairs
-        - Recognition Quality (RQ): F1 score of matched pairs
-        - Coverage: fraction of GT points correctly assigned
+    Permutation-invariant metrics robust to over-segmentation.
+    
+    - GT coverage:   for each GT instance, fraction of its points claimed by
+                     its best-matching predicted cluster (mean over GT instances)
+    - Pred coverage: for each predicted cluster, fraction of its points that
+                     belong to its best-matching GT instance (mean over pred clusters)
+    - F1 coverage:   harmonic mean of the two above
+    - Over-seg ratio: n_pred / n_gt  (>1 means over-segmented)
+    - Mean best IoU: mean over GT instances of their best IoU with any pred cluster
     """
-    pred_ids = np.unique(pred_labels)
     gt_ids   = np.unique(gt_labels)
+    pred_ids = np.unique(pred_labels)
 
-    # build IoU matrix (gt x pred)
-    iou_matrix = np.zeros((len(gt_ids), len(pred_ids)), dtype=np.float64)
-    for i, g in enumerate(gt_ids):
-        gt_mask = gt_labels == g
-        for j, p in enumerate(pred_ids):
-            pred_mask  = pred_labels == p
+    # --- GT coverage: how well each GT tree is covered by its best pred match ---
+    gt_coverages  = []
+    best_iou_list = []
+
+    for g in gt_ids:
+        gt_mask  = gt_labels == g
+        gt_size  = gt_mask.sum()
+        best_overlap = 0
+        best_iou     = 0.0
+
+        for p in pred_ids:
+            pred_mask    = pred_labels == p
             intersection = (gt_mask & pred_mask).sum()
             if intersection == 0:
                 continue
-            union = (gt_mask | pred_mask).sum()
-            iou_matrix[i, j] = intersection / union
+            best_overlap = max(best_overlap, intersection)
+            union        = (gt_mask | pred_mask).sum()
+            best_iou     = max(best_iou, intersection / union)
 
-    # Hungarian matching
-    row_ind, col_ind = linear_sum_assignment(-iou_matrix)
+        gt_coverages.append(best_overlap / gt_size)
+        best_iou_list.append(best_iou)
 
-    iou_threshold = 0.5
-    matched_iou = []
-    tp = 0
-    for r, c in zip(row_ind, col_ind):
-        if iou_matrix[r, c] >= iou_threshold:
-            matched_iou.append(iou_matrix[r, c])
-            tp += 1
+    # --- pred coverage: how pure each predicted cluster is ---
+    pred_coverages = []
+    for p in pred_ids:
+        pred_mask  = pred_labels == p
+        pred_size  = pred_mask.sum()
+        best_overlap = 0
 
-    fp = len(pred_ids) - tp
-    fn = len(gt_ids)  - tp
+        for g in gt_ids:
+            gt_mask      = gt_labels == g
+            intersection = (gt_mask & pred_mask).sum()
+            best_overlap = max(best_overlap, intersection)
 
-    sq = np.mean(matched_iou) if matched_iou else 0.0
-    rq = tp / (tp + 0.5 * fp + 0.5 * fn + 1e-10)
-    pq = sq * rq
+        pred_coverages.append(best_overlap / pred_size)
 
-    # per-point coverage: fraction of points whose GT label was matched correctly
-    matched_gt   = [gt_ids[r]   for r, c in zip(row_ind, col_ind) if iou_matrix[r, c] >= iou_threshold]
-    matched_pred = [pred_ids[c] for r, c in zip(row_ind, col_ind) if iou_matrix[r, c] >= iou_threshold]
-
-    correct = np.zeros(len(gt_labels), dtype=bool)
-    for g, p in zip(matched_gt, matched_pred):
-        mask = gt_labels == g
-        correct[mask] = pred_labels[mask] == p
-    coverage = correct.mean()
+    gt_cov   = float(np.mean(gt_coverages))
+    pred_cov = float(np.mean(pred_coverages))
+    f1_cov   = 2 * gt_cov * pred_cov / (gt_cov + pred_cov + 1e-10)
 
     return {
-        "PQ":       round(pq,       4),
-        "SQ":       round(sq,       4),
-        "RQ":       round(rq,       4),
-        "TP":       tp,
-        "FP":       fp,
-        "FN":       fn,
-        "coverage": round(coverage, 4),
-        "n_gt":     len(gt_ids),
-        "n_pred":   len(pred_ids),
+        "gt_coverage":    round(gt_cov,                  4),  # recall-like:  are GT trees fully captured?
+        "pred_coverage":  round(pred_cov,                4),  # precision-like: are pred clusters pure?
+        "f1_coverage":    round(f1_cov,                  4),  # balance of both
+        "mean_best_iou":  round(float(np.mean(best_iou_list)), 4),
+        "over_seg_ratio": round(len(pred_ids) / len(gt_ids),   4),  # 1.0 = perfect, >1 = over-seg
+        "n_gt":           len(gt_ids),
+        "n_pred":         len(pred_ids),
     }
