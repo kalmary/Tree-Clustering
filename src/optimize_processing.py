@@ -54,7 +54,7 @@ def evaluate_thresholds(
         metrics = evaluate_segmentation(pred_labels, gt_labels)
         all_metrics.append(metrics)
 
-        logger.debug(f"{file_path.name}: PQ={metrics['PQ']:.4f}")
+        logger.debug(f"{file_path.name}: f1_coverage={metrics['f1_coverage']:.4f}")
 
     del segmenter
 
@@ -97,10 +97,10 @@ def objective(
         max_nodes=max_nodes,
     )
 
-    pq = metrics["PQ"]
+    f1 = metrics["f1_coverage"]
     logger.info(f"Trial {trial.number} → PQ={pq:.4f} | metrics: {metrics}")
 
-    return pq
+    return f1
 
 
 def optimize_thresholds(
@@ -171,13 +171,13 @@ def optimize_thresholds(
     result = {
         "best_edge_threshold": best.params["edge_threshold"],
         "best_high_threshold": best.params["high_threshold"],
-        "best_PQ": best.value,
+        "best_f1_coverage": best.value,
         "best_params": best.params,
     }
 
     print("\n" + "=" * 50)
     print("Optimization complete!")
-    print(f"Best PQ:              {result['best_PQ']:.4f}")
+    print(f"Best f1_coverage:              {result['best_f1_coverage']:.4f}")
     print(f"Best edge_threshold:  {result['best_edge_threshold']:.2f}")
     print(f"Best high_threshold:  {result['best_high_threshold']:.2f}")
     print("=" * 50)
