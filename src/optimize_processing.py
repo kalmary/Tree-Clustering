@@ -5,6 +5,7 @@ import optuna
 import logging
 from pprint import pprint
 from typing import Union
+import tqdm
 
 from array_processing import TreeSegmGNN
 from utils.instance_segmentation_evaluation import evaluate_segmentation
@@ -20,11 +21,12 @@ def evaluate_thresholds(
     output_probs: bool = False,
     edge_threshold: float = False,
     high_threshold: float = False,
+    crown_threshold_reduction: float = 0.0,
     device: torch.device = torch.device('cuda'),
     radius: float = 1.5,
     voxel_factor: float = 0.78,
     max_nodes: int = 600,
-    verbose: bool = False,
+    verbose: bool = True,
 ) -> dict:
     """
     Run segmentation on all .npy files and return aggregated metrics.
@@ -37,15 +39,19 @@ def evaluate_thresholds(
         radius=radius,
         voxel_factor=voxel_factor,
         max_nodes=max_nodes,
-        output_probs=output_probs,
+        use_probs=output_probs,
         edge_threshold=edge_threshold,
-        high_threshold=high_threshold,
+        crown_threshold_reduction=crown_threshold_reduction,
         verbose=verbose,
     )
 
     all_metrics = []
+    
+    pbar = data_files
+    if verbose:
+        pbar = tqdm.tqdm(data_files, desc="Processing files", position=0, leave=False)
 
-    for file_path in data_files:
+    for file_path in pbar:
         cloud = np.load(file_path)
         xyz = cloud[:, :3]
         gt_labels = cloud[:, -1].astype(np.int32)
@@ -54,7 +60,7 @@ def evaluate_thresholds(
         metrics = evaluate_segmentation(pred_labels, gt_labels)
         all_metrics.append(metrics)
 
-        logger.debug(f"{file_path.name}: f1_coverage={metrics['f1_coverage']:.4f}")
+        logger.debug(f"{file_path.name}: seg_quality={metrics['seg_quality']:.4f}")
 
     del segmenter
 
@@ -76,31 +82,31 @@ def objective(
     max_nodes: int,
 ) -> float:
     edge_threshold = trial.suggest_float("edge_threshold", 0.2, 0.7, step=0.05)
-    high_threshold = trial.suggest_float("high_threshold", 0.4, 0.9, step=0.05)
+    crown_threshold_reduction = trial.suggest_float("crown_threshold_reduction", 0.0, 0.5, step=0.1)
     output_probs = trial.suggest_categorical("output_probs", [False, True])
 
-    # high_threshold must be >= edge_threshold — prune invalid combos
-    if high_threshold <= edge_threshold:
-        raise optuna.exceptions.TrialPruned()
+    logger.info(f"Trial {trial.number}: edge_threshold={edge_threshold:.2f}, crown_threshold_reduction={crown_threshold_reduction:.2f}") 
 
-    logger.info(f"Trial {trial.number}: edge_threshold={edge_threshold:.2f}, high_threshold={high_threshold:.2f}") 
+
+    if crown_threshold_reduction <= edge_threshold:
+        raise optuna.exceptions.TrialPruned()
 
     metrics = evaluate_thresholds(
         model_name=model_name,
         data_files=data_files,
         output_probs=output_probs,
         edge_threshold=edge_threshold,
-        high_threshold=high_threshold,
+        crown_threshold_reduction=crown_threshold_reduction,
         device=device,
         radius=radius,
         voxel_factor=voxel_factor,
         max_nodes=max_nodes,
     )
 
-    f1 = metrics["f1_coverage"]
-    logger.info(f"Trial {trial.number} → PQ={pq:.4f} | metrics: {metrics}")
-
-    return f1
+    seq_q = metrics['seg_quality']
+    logger.info(f"Trial {trial.number} → seg_quality={seq_q:.4f} | metrics: {metrics}")
+    
+    return seq_q
 
 
 def optimize_thresholds(
@@ -110,9 +116,9 @@ def optimize_thresholds(
     device_name: str = "cpu",
     radius: float = 1.5,
     voxel_factor: float = 0.78,
-    max_nodes: int = 600,
+    max_nodes: int = 300,
     study_name: str = "threshold_optimization",
-    storage: str = "sqlite:///threshold_study.db",
+    storage: str = 'sqlite:///db.sqlite3',
 ) -> dict:
     """
     Main entry point. Runs Optuna study to find best edge_threshold and high_threshold.
@@ -129,8 +135,9 @@ def optimize_thresholds(
         storage:      SQLite storage path for resumable studies.
 
     Returns:
-        dict with best_edge_threshold, best_high_threshold, best_PQ, all best_params.
+        dict with best_edge_threshold, best_high_threshold, best_f1, all best_params.
     """
+    study_name = study_name + f"_{model_name}"
     device = (
         torch.device("cuda")
         if ("cuda" in device_name.lower() or "gpu" in device_name.lower())
@@ -170,16 +177,16 @@ def optimize_thresholds(
     best = study.best_trial
     result = {
         "best_edge_threshold": best.params["edge_threshold"],
-        "best_high_threshold": best.params["high_threshold"],
-        "best_f1_coverage": best.value,
+        "best_crown_threshold_reduction": best.params["crown_threshold_reduction"],
+        "best_val": best.value,
         "best_params": best.params,
     }
 
     print("\n" + "=" * 50)
     print("Optimization complete!")
-    print(f"Best f1_coverage:              {result['best_f1_coverage']:.4f}")
+    print(f"Best value (seg_quality):              {result['best_val']:.4f}")
     print(f"Best edge_threshold:  {result['best_edge_threshold']:.2f}")
-    print(f"Best high_threshold:  {result['best_high_threshold']:.2f}")
+    print(f"Best crown_threshold_reduction:  {result['best_crown_threshold_reduction']:.2f}")
     print("=" * 50)
     pprint(result)
 
@@ -188,8 +195,8 @@ def optimize_thresholds(
 
 if __name__ == "__main__":
     result = optimize_thresholds(
-        model_name="EdgeGNN_2",
-        data_dir="data/split/train",
+        model_name="EdgeGNNV2_2",
+        data_dir="data/split/test",
         n_trials=50,
         device_name="cuda",
     )

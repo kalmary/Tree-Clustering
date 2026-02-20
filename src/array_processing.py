@@ -14,14 +14,11 @@ from utils.features import superpoint_features
 from utils.graph import build_edges
 from utils.edge_features import edge_features_vectorized
 from utils.structures import UnionFind
+from utils.instance_segmentation_evaluation import evaluate_segmentation
 from tqdm import tqdm
 
 from final_files.EdgeGNN import EdgeClassifierGNN
 from utils import load_json, load_model
-from utils.instance_segmentation_evaluation import evaluate_segmentation
-
-from itertools import product
-from pprint import pprint
 
 
 class TreeSegmGNN:
@@ -33,9 +30,9 @@ class TreeSegmGNN:
                  radius: float = 1.5,
                  voxel_factor: float = 0.78,
                  max_nodes: int = 600,
-                 output_probs: bool = False,
+                 use_probs: bool = False,
                  edge_threshold: float = 0.5,
-                 high_threshold: float = 0.6,
+                 crown_threshold_reduction: float = 0.2,
                  verbose: bool = False):
 
         if model_name is None:
@@ -50,9 +47,9 @@ class TreeSegmGNN:
         self.radius = radius
         self.voxel_factor = voxel_factor
         self.max_nodes = max_nodes
-        self.output_probs = output_probs
+        self.use_probs = use_probs
         self.edge_threshold = edge_threshold
-        self.high_threshold = high_threshold
+        self.crown_threshold_reduction = crown_threshold_reduction
         self.verbose = verbose
 
         self.base_path = pth.Path(__file__).parent
@@ -63,16 +60,11 @@ class TreeSegmGNN:
 
     def _load_config(self, config_dir: Union[pth.Path, str]) -> dict:
         config_dir = pth.Path(config_dir)
-
-        # Load model architecture config
         config_path = config_dir.joinpath(self.model_name.replace('.pt', '_config.json'))
         config_dict = load_json(config_path)
         self._model_config: dict = config_dict['model_config']
-
-        # Load scaling params (scaling_params_train.json in final_files)
         scaling_path = config_dir.joinpath("scaling_params_train.json")
         self._model_config["scaling_config"] = load_json(scaling_path)
-
         return config_dict
 
     def _load_model(self, model_dir: Union[pth.Path, str]) -> nn.Module:
@@ -95,15 +87,6 @@ class TreeSegmGNN:
         return self._model
 
     def _build_superpoint_arrays(self, xyz: np.ndarray):
-        """
-        Returns:
-            sp_indices     – list of raw-point index arrays, one per superpoint
-            centroid_array – (n_sp, 3)
-            pca_dir_array  – (n_sp, 3)
-            sp_features    – (n_sp, 8): thickness, verticality, linearity, planarity,
-                                         scattering, eigenvalue_ratio, omnivariance,
-                                         height_variation
-        """
         n_jobs = -1 if self.use_mp else 0
         sp_indices, _ = build_superpoints_mp(
             xyz, chunk=1000, radius=0.2, max_visits=-1,
@@ -115,7 +98,7 @@ class TreeSegmGNN:
         n_sp           = len(sp_indices)
         centroid_array = np.zeros((n_sp, 3), dtype=np.float32)
         pca_dir_array  = np.zeros((n_sp, 3), dtype=np.float32)
-        sp_features    = np.zeros((n_sp, 8), dtype=np.float32)  # see docstring
+        sp_features    = np.zeros((n_sp, 8), dtype=np.float32)
 
         iterator = enumerate(sp_indices)
         if self.verbose:
@@ -137,15 +120,10 @@ class TreeSegmGNN:
 
     def _build_node_features(self, centroid_array: np.ndarray,
                              sp_features: np.ndarray) -> np.ndarray:
-        """
-        (n_sp, 9): thickness, verticality, linearity, planarity, scattering,
-                    z-height, eigenvalue_ratio, omnivariance, height_variation
-        Matches the column order in preprocess_cloud_to_edges.
-        """
         return np.column_stack([
-            sp_features[:, :5],      # thickness … scattering
-            centroid_array[:, 2:3],  # z (height)
-            sp_features[:, 5:],      # eigenvalue_ratio, omnivariance, height_variation
+            sp_features[:, :5],
+            centroid_array[:, 2:3],
+            sp_features[:, 5:],
         ])
 
     def _build_edge_features(self, edges: np.ndarray,
@@ -157,11 +135,11 @@ class TreeSegmGNN:
         base = edge_features_vectorized(
             edges,
             centroid_array, pca_dir_array,
-            sp_features[:, 0],  # thickness
-            sp_features[:, 1],  # verticality
-            sp_features[:, 2],  # linearity
-            sp_features[:, 3],  # planarity
-            sp_features[:, 4],  # scattering
+            sp_features[:, 0],
+            sp_features[:, 1],
+            sp_features[:, 2],
+            sp_features[:, 3],
+            sp_features[:, 4],
             eps=1e-8
         )
 
@@ -180,12 +158,6 @@ class TreeSegmGNN:
     def _iter_subgraphs(self, edges: np.ndarray, edge_feats: np.ndarray,
                         node_features: np.ndarray, centroid_array: np.ndarray,
                         voxel_assignments):
-        """
-        Mirrors split_graph_by_voxels (without the label-balance skip).
-        Yields (Data, unique_nodes, local_edge_index):
-            unique_nodes      – global SP indices for local node 0, 1, 2, …
-            local_edge_index  – (2, E) tensor, indices into unique_nodes
-        """
         non_empty = [v for v in voxel_assignments if len(v) > 0]
         iterator  = tqdm(non_empty, desc="Subgraph inference", leave=False, position=1) \
                     if self.verbose else non_empty
@@ -197,16 +169,15 @@ class TreeSegmGNN:
             voxel_ef     = edge_feats[edge_indices]
             unique_nodes = np.unique(voxel_edges)
 
-            # node subsampling — identical to training
             if len(unique_nodes) > self.max_nodes:
                 unique_nodes = unique_nodes[
                     np.random.choice(len(unique_nodes), size=self.max_nodes, replace=False)
                 ]
-                mask             = np.zeros(n_global, dtype=bool)
+                mask               = np.zeros(n_global, dtype=bool)
                 mask[unique_nodes] = True
-                keep             = mask[voxel_edges[:, 0]] & mask[voxel_edges[:, 1]]
-                voxel_edges      = voxel_edges[keep]
-                voxel_ef         = voxel_ef[keep]
+                keep               = mask[voxel_edges[:, 0]] & mask[voxel_edges[:, 1]]
+                voxel_edges        = voxel_edges[keep]
+                voxel_ef           = voxel_ef[keep]
 
                 if len(voxel_edges) == 0:
                     continue
@@ -229,31 +200,23 @@ class TreeSegmGNN:
 
     @torch.no_grad()
     def _predict_subgraph(self, data: Data) -> np.ndarray:
-        data  = data.to(self.device)
+        data   = data.to(self.device)
         output = self.model(data).squeeze(-1)
-        if self.output_probs:
+        if self.use_probs:
             output = torch.sigmoid(output)
         return output.cpu().numpy()
 
     def _connect_floating_clusters(self, point_labels: np.ndarray, xyz: np.ndarray,
-                                    ground_z_threshold: float = 0.5,
-                                    min_cluster_size: int = 5000) -> np.ndarray:
-        """
-        Connects floating clusters to grounded ones based on centroid proximity.
-        A good cluster: touches the ground (lowest point within ground_z_threshold of min z)
-                        OR has more than min_cluster_size points.
-        A bad (floating) cluster is connected to the nearest good cluster centroid.
-        """
-        min_z = xyz[:, 2].min()
+                                   ground_z_threshold: float = 0.5,
+                                   min_cluster_size: int = 5000) -> np.ndarray:
+        min_z         = xyz[:, 2].min()
         unique_labels = np.unique(point_labels)
 
-        grounded = []
-        floating = []
-
+        grounded, floating = [], []
         for lbl in unique_labels:
-            mask = point_labels == lbl
+            mask        = point_labels == lbl
             cluster_pts = xyz[mask]
-            is_large = mask.sum() >= min_cluster_size
+            is_large    = mask.sum() >= min_cluster_size
             is_grounded = cluster_pts[:, 2].min() <= min_z + ground_z_threshold
             if is_grounded or is_large:
                 grounded.append(lbl)
@@ -276,19 +239,13 @@ class TreeSegmGNN:
         tree = cKDTree(grounded_centroids)
         _, nn = tree.query(floating_centroids, k=1)
 
-        point_labels_cluster = point_labels.copy()
+        result = point_labels.copy()
         for i, lbl in enumerate(floating):
-            point_labels_cluster[point_labels_cluster == lbl] = grounded[nn[i]]
+            result[result == lbl] = grounded[nn[i]]
 
-        return point_labels_cluster
+        return result
 
     def segment(self, xyz: np.ndarray) -> np.ndarray:
-        """
-        Raw XYZ (N, 3) → per-point integer tree instance labels (N,).
-        Noise points (not in any superpoint) are assigned via nearest centroid.
-        Overlapping superpoint membership is resolved by majority vote.
-        Two-pass union-find: high-confidence edges first, then extend only.
-        """
         sp_indices, centroid_array, pca_dir_array, sp_features = \
             self._build_superpoint_arrays(xyz)
 
@@ -326,30 +283,20 @@ class TreeSegmGNN:
                 vote_sum[key]   += float(probs[k])
                 vote_count[key] += 1
 
-        # --- union-find on mean-voted edges, two-pass thresholding ---
-        n_sp = len(sp_indices)
-        uf   = UnionFind(n_sp)
+        # --- union-find with height-adaptive threshold ---
+        n_sp    = len(sp_indices)
+        uf      = UnionFind(n_sp)
+        min_z   = centroid_array[:, 2].min()
+        max_z   = centroid_array[:, 2].max()
+        z_range = max_z - min_z + 1e-6
 
-        # pass 1: merge only very high confidence edges
         for (u, v), total in vote_sum.items():
-            if (total / vote_count[(u, v)]) >= self.high_threshold:
+            mean_score = total / vote_count[(u, v)]
+            mean_z     = (centroid_array[u, 2] + centroid_array[v, 2]) / 2.0
+            z_norm     = float(np.clip((mean_z - min_z) / z_range, 0, 1))
+            threshold  = self.edge_threshold - z_norm * self.crown_threshold_reduction
+            if mean_score >= threshold:
                 uf.union(u, v)
-
-        # snapshot cluster sizes after pass 1
-        roots_p1        = np.array([uf.find(i) for i in range(n_sp)])
-        cluster_size_p1 = np.bincount(roots_p1, minlength=n_sp)
-
-        # pass 2: extend existing confident clusters only
-        for (u, v), total in vote_sum.items():
-            count      = vote_count[(u, v)]
-            mean_score = total / count
-            if mean_score >= self.edge_threshold and mean_score < self.high_threshold:
-                root_u = uf.find(u)
-                root_v = uf.find(v)
-                if root_u == root_v:
-                    continue
-                if cluster_size_p1[root_u] > 1 or cluster_size_p1[root_v] > 1:
-                    uf.union(u, v)
 
         sp_labels = np.array([uf.find(i) for i in range(n_sp)], dtype=np.int64)
 
@@ -385,6 +332,7 @@ class TreeSegmGNN:
             _, nn = pt_tree.query(xyz[unassigned_mask], k=1, workers=-1)
             point_labels[unassigned_mask] = sp_labels[nn]
 
+        # transfer labels to start from 0 and be consecutive
         point_labels[point_labels != -1] = np.unique(
             point_labels[point_labels != -1], return_inverse=True
         )[1]
@@ -399,28 +347,32 @@ class TreeSegmGNN:
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    edge_threshold = 0.45
-    high_threshold = 0.85
-
     segmenter = TreeSegmGNN(
-            model_name="EdgeGNN_2",          # without .pt
-            device=device,
-            use_mp=True,
-            radius=1.5,
-            voxel_factor=0.78,
-            max_nodes=600,
-            edge_threshold=edge_threshold,
-            high_threshold=high_threshold,
-            verbose=True,
-        )
-    cloud = np.load("/home/msiniarski/Dokumenty/PROGRAMY/TreeClusteringGraph/data/split/train/000000.npy") # todo do zmiany
+        model_name="EdgeGNNV2_2",
+        device=device,
+        use_mp=True,
+        radius=1.5,
+        voxel_factor=0.78,
+        max_nodes=300,
+        use_probs=True,
+        edge_threshold=0.75,
+        crown_threshold_reduction=0.2,  # at max height: threshold = 0.75 - 0.2 = 0.55
+        verbose=True,
+    )
 
-    original_labels = cloud[:, 3].astype(np.int32)
-    labels = segmenter.segment(cloud[:, :3])
-    segmenter.segment(cloud[:, :3])
-    
+    cloud           = np.load("data/split/train/A1N_trees_000001.npy")
+    original_labels = cloud[:, -1].astype(np.int32)
+    labels          = segmenter.segment(cloud[:, :3])
+    print("Unique tree IDs:", np.unique(labels), "| shape:", labels.shape)
+
     from utils.plot_cloud import plot_cloud
     plot_cloud(cloud[:, :3], labels)
+
+    metrics = evaluate_segmentation(labels, original_labels)
+    print("\nSegmentation metrics:")
+    for key, value in metrics.items():
+        print(f"{key}: {value:.4f}")
+
 
 if __name__ == "__main__":
     main()
