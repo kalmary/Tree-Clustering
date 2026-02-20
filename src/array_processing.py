@@ -33,6 +33,7 @@ class TreeSegmGNN:
                  radius: float = 1.5,
                  voxel_factor: float = 0.78,
                  max_nodes: int = 600,
+                 output_probs: bool = False,
                  edge_threshold: float = 0.5,
                  high_threshold: float = 0.6,
                  verbose: bool = False):
@@ -49,6 +50,7 @@ class TreeSegmGNN:
         self.radius = radius
         self.voxel_factor = voxel_factor
         self.max_nodes = max_nodes
+        self.output_probs = output_probs
         self.edge_threshold = edge_threshold
         self.high_threshold = high_threshold
         self.verbose = verbose
@@ -229,7 +231,8 @@ class TreeSegmGNN:
     def _predict_subgraph(self, data: Data) -> np.ndarray:
         data  = data.to(self.device)
         output = self.model(data).squeeze(-1)
-        output = torch.sigmoid(output)
+        if self.output_probs:
+            output = torch.sigmoid(output)
         return output.cpu().numpy()
 
     def _connect_floating_clusters(self, point_labels: np.ndarray, xyz: np.ndarray,
@@ -396,17 +399,10 @@ class TreeSegmGNN:
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    edge_threshold_range = np.arange(0.2, 0.7, 0.1)
-    high_threshold_range = np.arange(0.6, 0.9, 0.1)
+    edge_threshold = 0.45
+    high_threshold = 0.85
 
-    combination = product(edge_threshold_range, high_threshold_range)
-
-    best_edge_threshold = None
-    best_high_threshold = None
-    best_PQ = -1.0
-
-    for edge_threshold, high_threshold in combination:
-        segmenter = TreeSegmGNN(
+    segmenter = TreeSegmGNN(
             model_name="EdgeGNN_2",          # without .pt
             device=device,
             use_mp=True,
@@ -417,36 +413,12 @@ def main():
             high_threshold=high_threshold,
             verbose=True,
         )
+    cloud = np.load("/home/msiniarski/Dokumenty/PROGRAMY/TreeClusteringGraph/data/split/train/000000.npy") # todo do zmiany
 
-        cloud  = np.load("data/split/train/A1N_trees_000001.npy")
-        original_labels = cloud[:, -1].astype(np.int32)
-        labels = segmenter.segment(cloud[:, :3])
-        # print("Unique tree IDs:", np.unique(labels), "| shape:", labels.shape)
-
-        # from utils.plot_cloud import plot_cloud
-        # plot_cloud(cloud[:, :3], labels)
-        metrics = evaluate_segmentation(labels, original_labels)
-        pprint(f"{'-'*60}\nEdge threshold: {edge_threshold:.2f}, High threshold: {high_threshold:.2f}\nMetrics:\n{metrics}\n{'-'*60}\n")
-        del segmenter
-
-        if best_edge_threshold is None or metrics['PQ'] > best_PQ:
-            best_edge_threshold = edge_threshold
-            best_high_threshold = high_threshold
-            best_PQ = metrics['PQ']
-
-    print(f"Best edge threshold: {best_edge_threshold:.2f}, Best high threshold: {best_high_threshold:.2f}, Best PQ: {best_PQ:.4f}")
-
-    segmenter = TreeSegmGNN(
-            model_name="EdgeGNN_2",          # without .pt
-            device=device,
-            use_mp=True,
-            radius=1.5,
-            voxel_factor=0.78,
-            max_nodes=600,
-            edge_threshold=best_edge_threshold,
-            high_threshold=best_high_threshold,
-            verbose=True,
-        )
+    original_labels = cloud[:, 3].astype(np.int32)
+    labels = segmenter.segment(cloud[:, :3])
+    segmenter.segment(cloud[:, :3])
+    
     from utils.plot_cloud import plot_cloud
     plot_cloud(cloud[:, :3], labels)
 
