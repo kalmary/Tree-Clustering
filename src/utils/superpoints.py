@@ -157,16 +157,22 @@ def build_superpoints_mp(points: np.ndarray,
     # ============================================
     # STEP 1: Build voxel centroids
     # ============================================
-    voxel_size = radius * voxel_factor 
+    voxel_size = radius * voxel_factor
 
-    coords = (points / voxel_size).astype(np.int32)
+    coords = np.round(points / voxel_size).astype(np.int32)  # round, not floor — symmetric around zero
     unique_voxels, inverse_indices = np.unique(coords, axis=0, return_inverse=True)
     n_unique_voxels = len(unique_voxels)
-    voxel_sums = np.zeros((n_unique_voxels, 3), dtype=np.float32)
+
+    # For each voxel, compute mean of its member points then snap to nearest
+    # actual point — avoids querying from empty space (same fix as build_edges).
+    voxel_sums = np.zeros((n_unique_voxels, 3), dtype=np.float64)
     np.add.at(voxel_sums, inverse_indices, points)
-    
-    counts = np.bincount(inverse_indices, minlength=n_unique_voxels)
-    voxel_centroids = voxel_sums / counts[:, None]
+    counts          = np.bincount(inverse_indices, minlength=n_unique_voxels)
+    voxel_means     = (voxel_sums / counts[:, None]).astype(np.float32)
+
+    _, anchor_indices = tree.query(voxel_means, k=1)          # nearest real point per voxel
+    voxel_centroids   = points[anchor_indices]                 # guaranteed existing points
+
 
     # ============================================
     # STEP 3: Query neighbors
