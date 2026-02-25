@@ -112,8 +112,7 @@ class BatchedGraphDataset(IterableDataset):
 
     def __iter__(self):
         """Yield batched graphs."""
-        files = sorted(self.path.rglob("*.pt"))
-
+        files = list(self.path.rglob("*.pt"))
         if self.shuffle:
             random.shuffle(files)
 

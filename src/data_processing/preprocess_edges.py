@@ -31,7 +31,7 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features,
         voxel_edge_feats  = edge_feats[edge_indices]
         voxel_edge_labels = edge_labels[edge_indices]
 
-        if np.unique(voxel_edge_labels).shape[0] < 2:
+        if np.all(np.unique(voxel_edge_labels) == 1):
             continue
 
         unique_nodes = np.unique(voxel_edges)
@@ -49,7 +49,7 @@ def split_graph_by_voxels(edges, edge_feats, edge_labels, node_features,
 
             if len(voxel_edges) == 0:
                 continue
-            if np.unique(voxel_edge_labels).shape[0] < 2:
+            if np.all(np.unique(voxel_edge_labels) == 1):
                 continue
 
             unique_nodes = np.unique(voxel_edges)
@@ -83,7 +83,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path,
                                use_mp: bool = False,
                                radius: float = 1.5,
                                voxel_factor: float = 0.78,
-                               tight_factor: float = 0.3,
+                               tight_factor: float = 0.2,
                                verbose: bool = False):
     cloud    = np.load(cloud_path)
     xyz      = cloud[:, :3]
@@ -135,7 +135,7 @@ def preprocess_cloud_to_edges(cloud_path, output_path,
         return
 
     edge_labels = edge_labels_binary(edges, sp_tree_ids)
-    if np.unique(edge_labels).shape[0] < 2:
+    if np.all(np.unique(edge_labels) == 1):
         return
 
     src = edges[:, 0]
@@ -217,7 +217,7 @@ def main():
             output_dir=f'data/edges/{split}',
             radius=1.5,
             voxel_factor=0.78,
-            tight_factor=0.3,
+            tight_factor=0.25,
             verbose=verbose,
         )
 
