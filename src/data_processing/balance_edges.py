@@ -1,141 +1,205 @@
 import torch
-import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from collections import defaultdict
 
 
-def balance_dataset_globally(
+def balance_graph_files_by_edge_ratio(
     edges_dir: Path,
     split: str = 'train',
-    target_ratio: float = 1.0,   # class0 : class1 — 1.0 = equal, 0.5 = half as many class0
-    dry_run: bool = True,
+    dry_run: bool = False,
+    backup: bool = False,
     verbose: bool = True,
+    min_minority_ratio: float = 0.20,
+    target_ratio: float = 1.0,
 ) -> dict:
     """
-    Balance the dataset globally by removing excess class-1-dominated files.
-
-    Strategy:
-        1. Scan all files, record class 0 and class 1 edge counts.
-        2. Sort files by minority (class 0) ratio descending — keep the most
-           balanced files first.
-        3. Greedily accumulate files until class 1 count would exceed
-           target_ratio * total_class_0. Files that would push class 1 over
-           the budget are removed.
-
-    This preserves all files that contribute class 0 edges and preferentially
-    removes files that are pure or near-pure class 1, minimising information
-    loss while improving global balance.
+    Balance graph files by:
+        1. Removing files where minority class < min_minority_ratio (hopeless files).
+        2. Among remaining files, removing those with the most majority-class edges
+           first until the global target_ratio is reached.
 
     Args:
-        edges_dir:    Root directory containing split subdirectories.
-        split:        Which split to process ('train', 'val', 'test').
-        target_ratio: Desired class1 / class0 ratio after balancing.
-                      1.0 = equal counts, 2.0 = 2× more class1 than class0.
-        dry_run:      If True, report only — do not delete files.
-        verbose:      Show progress and stats.
-
-    Returns:
-        dict with stats.
+        edges_dir:          Directory containing split subdirectories.
+        split:              Which split to process.
+        dry_run:            Only report, don't modify.
+        backup:             Rename to .pt.bak instead of deleting.
+        verbose:            Show progress and stats.
+        min_minority_ratio: Files with minority ratio below this are always removed.
+        target_ratio:       Target majority/minority ratio globally.
+                            1.0 = equal, 2.0 = allow 2x more majority than minority.
     """
-    split_dir = Path(edges_dir) / split
-    if not split_dir.exists():
-        raise ValueError(f"Directory does not exist: {split_dir}")
+    edges_dir = Path(edges_dir) / split
 
-    pt_files = sorted(split_dir.glob("*.pt"))
+    if not edges_dir.exists():
+        raise ValueError(f"Directory does not exist: {edges_dir}")
+
+    pt_files = sorted(edges_dir.glob("*.pt"))
     if not pt_files:
-        print(f"No .pt files found in {split_dir}")
+        print(f"No .pt files found in {edges_dir}")
         return {}
 
-    # --- scan ---
-    file_stats = []
-    pbar = tqdm(pt_files, desc="Scanning", disable=not verbose)
-    for path in pbar:
+    if verbose:
+        print(f"\n{'='*80}")
+        print(f"BALANCE GRAPH FILES - {split.upper()} (BY EDGE RATIO)")
+        print(f"{'='*80}\n")
+        print(f"Found {len(pt_files)} files")
+        print(f"Step 1: removing files with <{min_minority_ratio*100:.0f}% minority class")
+        print(f"Step 2: removing worst majority-dominated files until {target_ratio:.1f}:1 ratio")
+        print(f"\nScanning files...")
+
+    stats = {
+        'files_processed':     0,
+        'files_kept':          0,
+        'files_removed':       0,
+        'original_counts':     defaultdict(int),
+        'final_counts':        defaultdict(int),
+        'imbalance_histogram': defaultdict(int),
+    }
+
+    hopeless   = []   # below min_minority_ratio — always removed
+    candidates = []   # above threshold — may be removed in step 2
+
+    pbar = tqdm(pt_files, desc="Scanning files", disable=not verbose)
+    for file_path in pbar:
         try:
-            graph  = torch.load(path, map_location='cpu', weights_only=True)
-            labels = graph['y']
-            c0     = int((labels == 0).sum())
-            c1     = int((labels == 1).sum())
-            total  = c0 + c1
-            file_stats.append({
-                'path':           path,
-                'c0':             c0,
-                'c1':             c1,
-                'total':          total,
-                'minority_ratio': c0 / total if total > 0 else 0.0,
-            })
+            graph   = torch.load(file_path, map_location='cpu', weights_only=True)
+            labels  = graph['y']
+            class_0 = int((labels == 0).sum())
+            class_1 = int((labels == 1).sum())
+            total   = class_0 + class_1
             del graph
+
+            stats['original_counts'][0] += class_0
+            stats['original_counts'][1] += class_1
+            stats['files_processed']    += 1
+
+            minority_count = min(class_0, class_1)
+            majority_count = max(class_0, class_1)
+            minority_ratio = minority_count / total if total > 0 else 0.0
+
+            bin_idx = min(int(minority_ratio * 10) * 10, 90)
+            stats['imbalance_histogram'][bin_idx] += 1
+
+            file_info = {
+                'path':           file_path,
+                'class_0':        class_0,
+                'class_1':        class_1,
+                'total':          total,
+                'minority_ratio': minority_ratio,
+                'majority_count': majority_count,
+            }
+
+            if minority_ratio < min_minority_ratio:
+                hopeless.append(file_info)
+            else:
+                candidates.append(file_info)
+
         except Exception as e:
             if verbose:
-                pbar.write(f"Error: {path.name}: {e}")
+                pbar.write(f"Error processing {file_path.name}: {e}")
 
-    total_c0 = sum(f['c0'] for f in file_stats)
-    total_c1 = sum(f['c1'] for f in file_stats)
+    # --- step 2: among candidates, remove worst majority offenders until target ---
+    # sort candidates by majority_count descending — worst offenders first
+    candidates.sort(key=lambda f: f['majority_count'], reverse=True)
 
-    if verbose:
-        print(f"\nOriginal: {len(file_stats)} files")
-        print(f"  Class 0: {total_c0:>12,}  ({total_c0/(total_c0+total_c1)*100:.1f}%)")
-        print(f"  Class 1: {total_c1:>12,}  ({total_c1/(total_c0+total_c1)*100:.1f}%)")
-        print(f"  Ratio  : {total_c1/total_c0:.2f}:1  (target {target_ratio:.2f}:1)")
+    # compute current totals excluding hopeless files
+    cand_c0 = sum(f['class_0'] for f in candidates)
+    cand_c1 = sum(f['class_1'] for f in candidates)
+    global_majority  = 1 if cand_c1 >= cand_c0 else 0
+    global_minority  = 1 - global_majority
+    running_majority = cand_c1 if global_majority == 1 else cand_c0
+    running_minority = cand_c0 if global_majority == 1 else cand_c1
+    majority_budget  = int(running_minority * target_ratio)
 
-    # --- greedy selection ---
-    # Sort: files with most class-0 content first (we never want to drop those),
-    # then by minority ratio descending so balanced files are kept preferentially.
-    file_stats.sort(key=lambda f: (f['c0'] == 0, -f['minority_ratio']))
+    keep_files   = []
+    remove_step2 = []
 
-    c1_budget  = int(total_c0 * target_ratio)   # max class-1 edges we want to keep
-    kept_c0    = 0
-    kept_c1    = 0
-    keep_files = []
-    drop_files = []
-
-    for f in file_stats:
-        if f['c0'] > 0:
-            # Always keep files that contain any class-0 edges — they're rare
-            keep_files.append(f)
-            kept_c0 += f['c0']
-            kept_c1 += f['c1']
+    for f in candidates:
+        f_majority = f['class_1'] if global_majority == 1 else f['class_0']
+        if running_majority > majority_budget:
+            remove_step2.append(f)
+            running_majority -= f_majority
         else:
-            # Pure class-1 file — keep only if within budget
-            if kept_c1 + f['c1'] <= c1_budget:
-                keep_files.append(f)
-                kept_c1 += f['c1']
-            else:
-                drop_files.append(f)
+            keep_files.append(f)
+            stats['final_counts'][0] += f['class_0']
+            stats['final_counts'][1] += f['class_1']
+
+    remove_files = hopeless + remove_step2
+    stats['files_kept']    = len(keep_files)
+    stats['files_removed'] = len(remove_files)
 
     if verbose:
-        total_kept = kept_c0 + kept_c1
-        print(f"\nAfter balancing: {len(keep_files)} files kept, {len(drop_files)} removed")
-        print(f"  Class 0: {kept_c0:>12,}  ({kept_c0/total_kept*100:.1f}%)")
-        print(f"  Class 1: {kept_c1:>12,}  ({kept_c1/total_kept*100:.1f}%)")
-        print(f"  Ratio  : {kept_c1/kept_c0:.2f}:1")
-        print(f"\n{'[DRY RUN] ' if dry_run else ''}{'Deleting' if not dry_run else 'Would delete'} {len(drop_files)} files")
+        print(f"\nResults:")
+        print(f"  Removed (minority ratio < {min_minority_ratio*100:.0f}%): {len(hopeless)}")
+        print(f"  Removed (majority excess)                        : {len(remove_step2)}")
+        print(f"  Files kept                                       : {len(keep_files)}  ({len(keep_files)/len(pt_files)*100:.1f}%)")
 
-    if not dry_run:
-        for f in tqdm(drop_files, desc="Deleting", disable=not verbose):
-            f['path'].unlink()
+        print(f"\nMinority class ratio distribution (before removal):")
+        for bin_val in sorted(stats['imbalance_histogram'].keys()):
+            count = stats['imbalance_histogram'][bin_val]
+            pct   = count / stats['files_processed'] * 100
+            bar   = '█' * int(pct / 2)
+            label = f"{bin_val:3d}-{min(bin_val + 10, 100):3d}%"
+            print(f"  {label}: {count:5d} files ({pct:5.1f}%) {bar}")
 
-    return {
-        'files_kept':    len(keep_files),
-        'files_removed': len(drop_files),
-        'kept_c0':       kept_c0,
-        'kept_c1':       kept_c1,
-        'orig_c0':       total_c0,
-        'orig_c1':       total_c1,
-    }
+    # --- remove / backup ---
+    if not dry_run and remove_files:
+        if verbose:
+            print(f"\nRemoving {len(remove_files)} files...")
+        for file_info in tqdm(remove_files, desc="Removing files", disable=not verbose):
+            file_path = file_info['path']
+            if backup:
+                file_path.rename(file_path.with_suffix('.pt.bak'))
+            else:
+                file_path.unlink()
+
+    # --- summary ---
+    if verbose:
+        total_orig  = stats['original_counts'][0] + stats['original_counts'][1]
+        total_final = stats['final_counts'][0]     + stats['final_counts'][1]
+
+        print(f"\n{'='*80}")
+        print(f"{'[DRY RUN] ' if dry_run else ''}SUMMARY")
+        print(f"{'='*80}\n")
+        print(f"Files processed: {stats['files_processed']}")
+        print(f"Files kept     : {stats['files_kept']}  ({stats['files_kept']/stats['files_processed']*100:.1f}%)")
+        print(f"Files removed  : {stats['files_removed']}  ({stats['files_removed']/stats['files_processed']*100:.1f}%)")
+
+        if total_orig > 0:
+            print(f"\nOriginal distribution:")
+            print(f"  Class 0: {stats['original_counts'][0]:>12,}  ({stats['original_counts'][0]/total_orig*100:.1f}%)")
+            print(f"  Class 1: {stats['original_counts'][1]:>12,}  ({stats['original_counts'][1]/total_orig*100:.1f}%)")
+            if stats['original_counts'][0] > 0:
+                print(f"  Ratio  : {stats['original_counts'][1]/stats['original_counts'][0]:.2f}:1  (class1/class0)")
+
+        if total_final > 0:
+            print(f"\nFinal distribution:")
+            print(f"  Class 0: {stats['final_counts'][0]:>12,}  ({stats['final_counts'][0]/total_final*100:.1f}%)")
+            print(f"  Class 1: {stats['final_counts'][1]:>12,}  ({stats['final_counts'][1]/total_final*100:.1f}%)")
+            if stats['final_counts'][0] > 0:
+                orig_ratio  = stats['original_counts'][1] / stats['original_counts'][0]
+                final_ratio = stats['final_counts'][1]    / stats['final_counts'][0]
+                improvement = (orig_ratio - final_ratio) / orig_ratio * 100
+                print(f"  Ratio  : {final_ratio:.2f}:1  (class1/class0)")
+                print(f"\nImprovement: ratio reduced by {improvement:.1f}%")
+
+        if dry_run:
+            print("\nDry run - no files modified")
+
+    return stats
 
 
 if __name__ == "__main__":
     edges_dir = Path("data/edges")
-
+  
     for split in ['train', 'val', 'test']:
-        if not (edges_dir / split).exists():
-            continue
-        print(f"\n{'='*60}\n{split.upper()}\n{'='*60}")
-        balance_dataset_globally(
-            edges_dir=edges_dir,
-            split=split,
-            target_ratio=1.0,   # aim for 1:1
-            dry_run=False,        # flip to False when happy
-            verbose=True,
-        )
+        if (edges_dir / split).exists():
+            balance_graph_files_by_edge_ratio(
+                edges_dir,
+                split=split,
+                dry_run=False,
+                backup=False,
+                min_minority_ratio=0.1,
+                target_ratio=3.0,
+            )
