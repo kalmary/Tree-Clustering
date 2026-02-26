@@ -6,6 +6,7 @@ import logging
 from pprint import pprint
 from typing import Union
 import tqdm
+import random
 
 from array_processing import TreeSegmGNN
 from utils.instance_segmentation_evaluation import evaluate_segmentation
