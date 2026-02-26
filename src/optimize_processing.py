@@ -117,6 +117,7 @@ def optimize_thresholds(
     radius: float = 1.5,
     voxel_factor: float = 0.78,
     max_nodes: int = 300,
+    file_ratio: float = 0.4,
     study_name: str = "threshold_optimization",
     storage: str = 'sqlite:///db.sqlite3',
 ) -> dict:
@@ -148,6 +149,8 @@ def optimize_thresholds(
 
     data_dir = pth.Path(data_dir)
     data_files = sorted(data_dir.glob("*.npy"))
+    random.shuffle(data_files)
+    data_files = data_files[:file_ratio*len(data_files)]
     assert len(data_files) > 0, f"No .npy files found in {data_dir}"
     logger.info(f"Found {len(data_files)} .npy files in {data_dir}")
 
@@ -195,7 +198,7 @@ def optimize_thresholds(
 
 if __name__ == "__main__":
     result = optimize_thresholds(
-        model_name="EdgeGNNV2_2",
+        model_name="EdgeGNNV5_2",
         data_dir="data/split/test",
         n_trials=50,
         device_name="cuda",
