@@ -151,7 +151,7 @@ def optimize_thresholds(
     data_dir = pth.Path(data_dir)
     data_files = sorted(data_dir.glob("*.npy"))
     random.shuffle(data_files)
-    data_files = data_files[:file_ratio*len(data_files)]
+    data_files = data_files[:int(file_ratio*len(data_files))]
     assert len(data_files) > 0, f"No .npy files found in {data_dir}"
     logger.info(f"Found {len(data_files)} .npy files in {data_dir}")
 
