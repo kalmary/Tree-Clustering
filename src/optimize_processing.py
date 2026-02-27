@@ -118,7 +118,7 @@ def optimize_thresholds(
     voxel_factor: float = 0.78,
     max_nodes: int = 300,
     file_ratio: float = 0.4,
-    study_name: str = "threshold_optimization",
+    study_name: str = "threshold_optimization_TF025",
     storage: str = 'sqlite:///db.sqlite3',
 ) -> dict:
     """
