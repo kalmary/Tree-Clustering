@@ -21,7 +21,6 @@ def evaluate_thresholds(
     data_files: list[pth.Path],
     output_probs: bool = False,
     edge_threshold: float = False,
-    high_threshold: float = False,
     crown_threshold_reduction: float = 0.0,
     device: torch.device = torch.device('cuda'),
     radius: float = 1.5,
