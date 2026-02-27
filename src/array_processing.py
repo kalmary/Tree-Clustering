@@ -258,7 +258,7 @@ class TreeSegmGNN:
             centroids=centroid_array,
             radius=self.radius,
             voxel_factor=self.voxel_factor,
-            tight_factor=0.3,
+            tight_factor=0.25,
             verbose=self.verbose
         )
         if edges.shape[0] == 0:
