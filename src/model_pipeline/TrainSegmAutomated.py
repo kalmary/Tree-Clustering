@@ -417,7 +417,7 @@ def case_based_training(exp_configs: list[dict],
         for model, result_hist in train_model(config=exp_config):
             logger.info(f'Single model was generated. val_f1: {result_hist["f1_v_hist"][-1]:.3f}  val_loss: {result_hist["loss_v_hist"][-1]:.3f}')
 
-            final_val = result_hist['f1_v_hist'][-1]*0.7 + (1 / (1 + result_hist['loss_v_hist'][-1]))*0.3
+            final_val = result_hist['f1_v_hist'][-1]*0.4 + (1 / (1 + result_hist['loss_v_hist'][-1]))*0.6
             
             model, best_config, config_path = checkpoint.check_checkpoint(model, model_name, final_val, exp_config, result_hist)
     
@@ -598,7 +598,7 @@ def objective_function(trial: optuna.Trial,
 
 
         normalized_loss = 1 / (1 + best_val_loss)
-        final_val = 0.95 * best_val_f1 + 0.05 * normalized_loss
+        final_val = 0.4 * best_val_f1 + 0.6 * normalized_loss
 
         checkpoint.check_checkpoint(model,
                                     model_name,
@@ -628,8 +628,8 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
     logger.info(f'START: optuna_based_training.')
 
     # able to automatically stop poor working exps
-    n_startup = 15
-    n_warmup_steps = 30
+    n_startup = 20
+    n_warmup_steps = 40
     interval_steps = 10
 
     pruner = optuna.pruners.MedianPruner(n_startup_trials=n_startup, n_warmup_steps=n_warmup_steps, interval_steps=interval_steps)
@@ -679,11 +679,11 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
     best_params = best_trial.params
     best_value = best_trial.value
 
-    logger.info(f'Optimization finished. Best value of formula: 0.95 * val_acc + 0.05 * norm_val_loss: {best_value:.4f}')
+    logger.info(f'Optimization finished. Best value of formula: 0.4 * val_acc + 0.6 * norm_val_loss: {best_value:.4f}')
 
     print(20*'=')
     print(f'Optuna optimalization finished')
-    print(f'Best value of 0.95 * val_f1 + 0.05 * norm_val_loss: {best_value:.4f}')
+    print(f'Best value of 0.4 * val_f1 + 0.6 * norm_val_loss: {best_value:.4f}')
     pprint(f'Best trial params:\n{best_params}')
     print(20*'=')
 

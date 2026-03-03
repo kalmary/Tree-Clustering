@@ -13,14 +13,14 @@
 
     "general_convention_comment": "start, stop, step",
     
-    "learning_rate": [0.001, 0.0001, 0.1],
+    "learning_rate": [0.001, 0.00001, 0.1],
     "weight_decay": [0.001, 0.00001, 0.1],
-    "focal_gamma": [0.5, 2.0, 0.5],
+    "focal_gamma": [1.25, 2.5, 0.25],
     "learning_rate_comment": "low_lr, high_lr, factor",
 
 
     "scheduler_params_comment": [],
-    "pct_start": [0.1, 0.3, 0.1],
+    "pct_start": [0.2, 0.4, 0.1],
     "pct_start_comment": "start, stop, step",
     "div_factor": [100.0, 10.0, 0.1],
     "div_factor_comment": "low, high, factor",

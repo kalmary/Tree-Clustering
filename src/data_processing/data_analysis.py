@@ -622,7 +622,7 @@ def analyze_graph_data(
 def main():
     edges_dir = Path("data/edges")
     
-    for split in ['train', 'val', 'test']:
+    for split in ['train']:
         if (edges_dir / split).exists():
             print(f"\n{'='*80}")
             print(f"Processing {split} split...")
