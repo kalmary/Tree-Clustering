@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def binary_f1_score(preds: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
@@ -54,3 +55,62 @@ class FocalLossBCE(nn.Module):
         pt = torch.exp(-bce_loss)
         focal_loss = (1-pt)**self.gamma * bce_loss
         return focal_loss.mean()
+
+class ContrastiveLoss(nn.Module):
+    def __init__(
+        self,
+        alpha: float = 0.5,
+        margin: float = 0.1,
+    ):
+        """
+        Contrastive loss on node embeddings using edge supervision.
+
+        Pulls same-tree node embedding pairs toward cosine similarity 1.0.
+        Pushes inter-tree node embedding pairs below a margin.
+
+        Weighted by alpha using the same convention as focal loss:
+            alpha         = weight for class-1 (same-tree)
+            (1 - alpha)   = weight for class-0 (inter-tree)
+
+        For majority class-1 (your case, 6.4:1):
+            alpha < 0.5 — downweights same-tree term
+            alpha_exact = n_c0 / (n_c0 + n_c1) = 0.135
+
+        Args:
+            alpha:  Class-1 weight. Use focal_params() to compute exact value.
+            margin: Inter-tree pairs are penalised only if cosine similarity
+                    exceeds this margin. 0.1 means pairs are allowed to be
+                    slightly similar before penalty kicks in.
+        """
+        super().__init__()
+        
+        self.alpha  = alpha
+        self.margin = margin
+
+    def forward(
+        self,
+        node_embeddings: torch.Tensor,   # (N, hidden_dim)
+        edge_index:      torch.Tensor,   # (2, E)
+        edge_labels:     torch.Tensor,   # (E,) — 0 or 1
+    ) -> torch.Tensor:
+        h_u = node_embeddings[edge_index[0]]   # (E, hidden_dim)
+        h_v = node_embeddings[edge_index[1]]   # (E, hidden_dim)
+
+        cos_sim = F.cosine_similarity(h_u, h_v, dim=1)   # (E,)
+
+        same_tree  = edge_labels == 1
+        inter_tree = edge_labels == 0
+
+        # same-tree: minimise (1 - cos_sim) → push similarity toward 1
+        loss_same = (
+            (1.0 - cos_sim[same_tree]).mean()
+            if same_tree.any() else cos_sim.new_tensor(0.0)
+        )
+
+        # inter-tree: penalise similarity above margin → push similarity below margin
+        loss_inter = (
+            F.relu(cos_sim[inter_tree] - self.margin).mean()
+            if inter_tree.any() else cos_sim.new_tensor(0.0)
+        )
+
+        return self.alpha * loss_same + (1.0 - self.alpha) * loss_inter
