@@ -155,33 +155,28 @@ class EdgeClassifierGNN(nn.Module):
             return (edge_attr - self.edge_medians) / (iqr + 1e-8)
         return edge_attr
 
-    def forward(self, data):
+    def forward(self, data, return_embeddings: bool = False):
         x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
-        
-        # Scale node and edge features separately
-        x = self.scale_node_features(x)
+
+        x         = self.scale_node_features(x)
         edge_attr = self.scale_edge_features(edge_attr)
-        
-        # Encode nodes
-        x = self.node_encoder(x)
-        
-        # GAT message passing
+        x         = self.node_encoder(x)
+
         for i, conv in enumerate(self.convs):
             x_new = conv(x, edge_index, edge_attr=edge_attr)
             x_new = self.batch_norms[i](x_new)
             x_new = F.relu(x_new)
             x_new = F.dropout(x_new, p=self.dropout, training=self.training)
             x = x + x_new if i > 0 else x_new
-        
-        # Extract node embeddings for each edge
+
         src_embeddings = x[edge_index[0]]
         dst_embeddings = x[edge_index[1]]
-        
-        # Concatenate source, destination, and edge features
-        edge_input = torch.cat([src_embeddings, dst_embeddings, edge_attr], dim=1)
-        
-        logits = self.edge_classifier(edge_input)
-        return logits.squeeze(-1)
+        edge_input     = torch.cat([src_embeddings, dst_embeddings, edge_attr], dim=1)
+        logits         = self.edge_classifier(edge_input).squeeze(-1)
+
+        if return_embeddings:
+            return logits, x, edge_index   # x used for contrastive loss
+        return logits
 
 
 if __name__ == "__main__":

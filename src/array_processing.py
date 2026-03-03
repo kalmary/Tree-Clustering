@@ -33,6 +33,7 @@ class TreeSegmGNN:
                  use_probs: bool = False,
                  edge_threshold: float = 0.5,
                  crown_threshold_reduction: float = 0.2,
+                 local_radius_cylinder: float = 2.,
                  verbose: bool = False):
 
         if model_name is None:
@@ -50,6 +51,7 @@ class TreeSegmGNN:
         self.use_probs = use_probs
         self.edge_threshold = edge_threshold
         self.crown_threshold_reduction = crown_threshold_reduction
+        self.local_radius_cylinder = local_radius_cylinder
         self.verbose = verbose
 
         self.base_path = pth.Path(__file__).parent
@@ -244,13 +246,23 @@ class TreeSegmGNN:
             result[result == lbl] = grounded[nn[i]]
 
         return result
+    
+    def _reduce_labels(self, labels: np.ndarray) -> np.ndarray:
+        _, labels[labels!=-1] = np.unique(labels[labels!=-1], return_inverse=True)
+        return labels
 
     def segment(self, xyz: np.ndarray) -> np.ndarray:
+
+        xyz = xyz.copy()  # don't modify caller's array
+        xyz[:, :2] -= xyz[:, :2].mean(axis=0)
+
         sp_indices, centroid_array, pca_dir_array, sp_features = \
             self._build_superpoint_arrays(xyz)
+        len_xyz = len(xyz)
+        del len_xyz
 
         if sp_indices is None:
-            return np.zeros(len(xyz), dtype=np.int64)
+            return np.zeros(len_xyz, dtype=np.int64)
 
         node_features = self._build_node_features(centroid_array, sp_features)
 
@@ -259,10 +271,10 @@ class TreeSegmGNN:
             radius=self.radius,
             voxel_factor=self.voxel_factor,
             tight_factor=0.25,
-            verbose=self.verbose
+            verbose=self.verbose,
         )
         if edges.shape[0] == 0:
-            return np.zeros(len(xyz), dtype=np.int64)
+            return np.zeros(len_xyz, dtype=np.int64)
 
         edge_feats = self._build_edge_features(
             edges, centroid_array, pca_dir_array, sp_features
@@ -275,68 +287,100 @@ class TreeSegmGNN:
         for data, unique_nodes, local_ei in self._iter_subgraphs(
                 edges, edge_feats, node_features, centroid_array, voxel_assignments):
 
-            probs     = self._predict_subgraph(data)
-            global_ei = unique_nodes[local_ei.cpu().numpy()]
+            probs     = self._predict_subgraph(data)          # (E*2,) after to_undirected
+            global_ei = unique_nodes[local_ei.cpu().numpy()]  # (2, E*2)
 
-            for k in range(global_ei.shape[1]):
-                u, v = int(global_ei[0, k]), int(global_ei[1, k])
-                key  = (u, v) if u < v else (v, u)
-                vote_sum[key]   += float(probs[k])
+            us = global_ei[0]
+            vs = global_ei[1]
+
+            # split into canonical (u<v) and reverse (u>v) directions
+            canonical = us < vs
+
+            us_c = us[canonical]
+            vs_c = vs[canonical]
+            p_uv = probs[canonical]
+
+            us_r = us[~canonical]
+            vs_r = vs[~canonical]
+            p_vu = probs[~canonical]
+
+            # reverse lookup keyed by canonical (u<v) tuple
+            reverse_map = dict(zip(
+                zip(vs_r.tolist(), us_r.tolist()),  # flip to canonical key
+                p_vu.tolist()
+            ))
+
+            # one vote per edge per subgraph = mean of both GAT directions
+            # makes prediction direction-invariant without retraining
+            for key, p_fwd in zip(zip(us_c.tolist(), vs_c.tolist()), p_uv.tolist()):
+                p_rev = reverse_map.get(key, p_fwd)  # fallback to fwd if missing
+                vote_sum[key]   += (p_fwd + p_rev) / 2.0
                 vote_count[key] += 1
 
-        # --- union-find with height-adaptive threshold ---
+        del edges, edge_feats, node_features, voxel_assignments
+        del us_c, vs_c, p_uv, probs, us_r, us, vs_r, vs, p_vu
+
+        # --- union-find with local height-adaptive threshold ---
+        # lazy iteration over edges — O(1) memory, no bulk array materialization
         n_sp    = len(sp_indices)
         uf      = UnionFind(n_sp)
-        min_z   = centroid_array[:, 2].min()
-        max_z   = centroid_array[:, 2].max()
-        z_range = max_z - min_z + 1e-6
+        xy_tree = cKDTree(centroid_array[:, :2])
 
-        for (u, v), total in vote_sum.items():
+        pbar = vote_sum.items()
+        if self.verbose:
+            pbar = tqdm(vote_sum.items(), total=len(vote_sum),
+                        desc="Labelling edges", leave=False, position=1)
+
+        for (u, v), total in pbar:
             mean_score = total / vote_count[(u, v)]
-            mean_z     = (centroid_array[u, 2] + centroid_array[v, 2]) / 2.0
-            z_norm     = float(np.clip((mean_z - min_z) / z_range, 0, 1))
-            threshold  = self.edge_threshold - z_norm * self.crown_threshold_reduction
+
+            cx = (centroid_array[u, 0] + centroid_array[v, 0]) / 2.0
+            cy = (centroid_array[u, 1] + centroid_array[v, 1]) / 2.0
+            cz = (centroid_array[u, 2] + centroid_array[v, 2]) / 2.0
+
+            local_idx = xy_tree.query_ball_point([cx, cy], r=self.local_radius_cylinder)
+            if len(local_idx) < 2:
+                continue
+
+            local_z     = centroid_array[local_idx, 2]
+            local_min_z = local_z.min()
+            local_range = local_z.max() - local_min_z + 1e-6
+            z_norm      = float(np.clip((cz - local_min_z) / local_range, 0, 1))
+            threshold   = self.edge_threshold - z_norm * self.crown_threshold_reduction
+
             if mean_score >= threshold:
                 uf.union(u, v)
+
+        del vote_count, vote_sum
 
         sp_labels = np.array([uf.find(i) for i in range(n_sp)], dtype=np.int64)
 
         # --- propagate labels from non-singleton SPs to isolated ones ---
         cluster_size = np.bincount(sp_labels, minlength=n_sp)
         is_singleton = cluster_size[sp_labels] == 1
-
         n_singletons = is_singleton.sum()
+
         if n_singletons > 0 and n_singletons < n_sp:
             labeled_idx   = np.where(~is_singleton)[0]
             singleton_idx = np.where(is_singleton)[0]
-
-            sp_tree = cKDTree(centroid_array[labeled_idx])
-            _, nn_pos = sp_tree.query(centroid_array[singleton_idx], k=1, workers=-1)
+            sp_tree       = cKDTree(centroid_array[labeled_idx])
+            _, nn_pos     = sp_tree.query(centroid_array[singleton_idx], k=1, workers=-1)
             sp_labels[singleton_idx] = sp_labels[labeled_idx[nn_pos]]
 
-        # --- back-project SP labels to raw points via majority vote ---
-        point_votes = defaultdict(list)
-        for sp_id, idx in enumerate(sp_indices):
-            label = sp_labels[sp_id]
-            for pt in idx:
-                point_votes[pt].append(label)
-
+        # --- back-project SP labels to raw points ---
+        # build_superpoints_mp partitions points — each point in at most one SP
         point_labels = np.full(len(xyz), -1, dtype=np.int64)
-        for pt, votes in point_votes.items():
-            unique_labels, counts = np.unique(votes, return_counts=True)
-            point_labels[pt] = unique_labels[np.argmax(counts)]
+        for sp_id, idx in enumerate(sp_indices):
+            point_labels[np.asarray(idx)] = sp_labels[sp_id]
 
         # --- fallback for noise points not in any superpoint ---
         unassigned_mask = point_labels == -1
         if unassigned_mask.any():
             pt_tree = cKDTree(centroid_array)
-            _, nn = pt_tree.query(xyz[unassigned_mask], k=1, workers=-1)
+            _, nn   = pt_tree.query(xyz[unassigned_mask], k=1, workers=-1)
             point_labels[unassigned_mask] = sp_labels[nn]
 
-        # transfer labels to start from 0 and be consecutive
-        point_labels[point_labels != -1] = np.unique(
-            point_labels[point_labels != -1], return_inverse=True
-        )[1]
+        point_labels = self._reduce_labels(point_labels)
 
         return point_labels
 
@@ -349,19 +393,20 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     segmenter = TreeSegmGNN(
-        model_name="EdgeGNNV2_2",
+        model_name="EdgeGNNV5_2",
         device=device,
         use_mp=True,
         radius=1.5,
         voxel_factor=0.78,
         max_nodes=300,
         use_probs=True,
-        edge_threshold=0.75,
+        edge_threshold=0.7,
         crown_threshold_reduction=0.2,  # at max height: threshold = 0.75 - 0.2 = 0.55
+        local_radius_cylinder=1.5,
         verbose=True,
     )
 
-    cloud           = np.load("data/split/train/A1N_trees_000001.npy")
+    cloud           = np.load("data/split/test/A1W_trees_000063.npy")
     original_labels = cloud[:, -1].astype(np.int32)
     labels          = segmenter.segment(cloud[:, :3])
     print("Unique tree IDs:", np.unique(labels), "| shape:", labels.shape)
