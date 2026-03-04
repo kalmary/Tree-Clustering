@@ -158,9 +158,10 @@ def preprocess_cloud_to_edges(cloud_path, output_path,
     ])
 
     node_features = np.column_stack([
-        sp_features[:, :5],        # thickness … scattering
-        centroid_array[:, 2:3],    # z (height)
-        sp_features[:, 5:],        # eigenvalue_ratio, omnivariance, height_variation
+        sp_features[:, :5],          # thickness, verticality, linearity, planarity, scattering
+        centroid_array[:, 2:3],      # z absolute
+        sp_features[:, 5:],          # eigenvalue_ratio, omnivariance, height_variation
+        np.abs(pca_dir_array[:, 2:3]),  # pca_z — how vertical is the SP axis
     ])
 
     for i, graph in enumerate(split_graph_by_voxels(
