@@ -20,34 +20,52 @@ def edge_features(sp_a, sp_b):
 
 import numpy as np
 
-def edge_features_vectorized(edges, centroid, pca_dir, thickness, verticality, 
+def edge_features_vectorized(edges, centroid, pca_dir, thickness, verticality,
                              linearity, planarity, scattering, eps=1e-8):
     i, j = edges[:, 0], edges[:, 1]
-    
+
     # 1. Edge Geometry
-    diff = centroid[j] - centroid[i]
-    dist = np.linalg.norm(diff, axis=1)
-    unit_diff = diff / (dist[:, None] + eps)
-    
-    # 2. Alignment: Does the edge vector follow the PCA direction of the nodes?
-    # This tells us if Node A and Node B are "stacked" along their growth axis.
+    diff        = centroid[j] - centroid[i]
+    dist        = np.linalg.norm(diff, axis=1)
+    unit_diff   = diff / (dist[:, None] + eps)
+
+    # 2. Directional alignment with PCA axis
     align_i = np.abs(np.sum(unit_diff * pca_dir[i], axis=1))
     align_j = np.abs(np.sum(unit_diff * pca_dir[j], axis=1))
-    
-    # 3. Shape Consistency
-    # Do they have the same "vibe"? (e.g., both are linear)
-    lin_diff = np.abs(linearity[i] - linearity[j])
-    scat_avg = (scattering[i] + scattering[j]) / 2
-    
-    # 4. Vertical context (since we have no ground, use absolute Z and delta Z)
-    z_min = np.minimum(centroid[i, 2], centroid[j, 2])
+
+    # 3. Shape consistency
+    lin_diff  = np.abs(linearity[i]  - linearity[j])
+    scat_avg  = (scattering[i] + scattering[j]) / 2
+
+    # 4. Vertical context
+    z_min  = np.minimum(centroid[i, 2], centroid[j, 2])
     z_diff = np.abs(centroid[i, 2] - centroid[j, 2])
 
+    # 5. Horizontal vs vertical decomposition
+    horiz_dist = np.sqrt(diff[:, 0]**2 + diff[:, 1]**2)
+    h_v_ratio  = horiz_dist / (z_diff + eps)  # low = vertical = likely trunk
+
+    # 6. Planarity — crown boundary edges connect two planar SPs
+    plan_diff = np.abs(planarity[i] - planarity[j])
+    plan_avg  = (planarity[i] + planarity[j]) / 2
+
+    # 7. Thickness difference — same-tree SPs have gradual thickness change
+    thick_diff = np.abs(thickness[i] - thickness[j])
+
+    # 8. Verticality product — both vertical = likely same trunk segment
+    vert_product = verticality[i] * verticality[j]
+
     return np.column_stack([
-        dist,               # Distance
-        align_i, align_j,   # Directional Alignment
-        lin_diff,           # Similarity in shape
-        scat_avg,           # How "noisy" the area is
-        z_diff,             # Vertical step
-        z_min               # Absolute height (still useful for species/scaling)
+        dist,                    # 1  distance
+        align_i, align_j,        # 2  directional alignment src, dst
+        lin_diff,                # 4  linearity difference
+        scat_avg,                # 5  average scattering
+        z_diff,                  # 6  vertical step
+        z_min,                   # 7  absolute height
+        horiz_dist,              # 8  horizontal distance
+        h_v_ratio,               # 9  horizontal/vertical ratio
+        plan_diff,               # 10 planarity difference
+        plan_avg,                # 11 average planarity
+        thick_diff,              # 12 thickness difference
+        vert_product,            # 13 verticality product
     ])

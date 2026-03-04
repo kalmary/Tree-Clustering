@@ -63,9 +63,9 @@ def check_models(model_configs_paths: list[pth.Path],
             # Create dummy PyG Data object
             from torch_geometric.data import Data
             dummy_data = Data(
-                x=torch.randn(20, 9),  # 10 node features
+                x=torch.randn(20, 10),  # 10 node features
                 edge_index=torch.randint(0, 20, (2, 100)),
-                edge_attr=torch.randn(100, 11)
+                edge_attr=torch.randn(100, 17)
             )
             
             # Manual forward pass to check compilation and memory
@@ -353,6 +353,7 @@ class Checkpoint:
 
         best_config = exp_config
         best_config['device'] = str(best_config['device'])
+        # best_config['threshold'] = result_hist['best_threshold']
 
         config_path = dict_files_dir.joinpath(f'{model_path.stem}_config.json')
         save2json(best_config, config_path)

@@ -1,6 +1,6 @@
 {
-    "node_feat_dim": 11,
-    "edge_feat_dim": 9,
+    "node_feat_dim": 10,
+    "edge_feat_dim": 17,
     "hidden_dim": 32,
     "num_layers": 2,
     "dropout": 0.1,
