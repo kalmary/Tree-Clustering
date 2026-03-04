@@ -118,16 +118,13 @@ def load_graph_data_generator(
 def compute_quantiles_streaming(
     pt_files: List[Path],
     percentiles: List[int] = [25, 50, 75],
-    n_edge_features: int = 12,
-    n_node_features: int = 10,
+    n_edge_features: int = 17,   # updated: 13 original + 4 new
+    n_node_features: int = 10,   # updated: 9 original + 1 new (pca_z)
     sample_size: int = 100000,
     verbose: bool = True
 ) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray]]:
     """
     Compute quantiles for both edge and node features via reservoir sampling.
-
-    Returns:
-        (edge_quantiles, node_quantiles) — both dicts mapping percentile -> array
     """
     edge_samples = []
     node_samples = []
@@ -142,7 +139,6 @@ def compute_quantiles_streaming(
             edge_features = graph_data['edge_attr'].numpy()
             node_features = graph_data['x'].numpy()
 
-            # Reservoir sampling for edges
             for feat in edge_features:
                 total_edges_seen += 1
                 if len(edge_samples) < sample_size:
@@ -152,7 +148,6 @@ def compute_quantiles_streaming(
                     if j < sample_size:
                         edge_samples[j] = feat
 
-            # Reservoir sampling for nodes
             for feat in node_features:
                 total_nodes_seen += 1
                 if len(node_samples) < sample_size:
@@ -191,7 +186,7 @@ def compute_quantiles_streaming(
 
 def compute_class_statistics_streaming(
     pt_files: List[Path],
-    n_features: int = 12,
+    n_features: int = 17,
     verbose: bool = True
 ) -> Tuple[OnlineStats, OnlineStats, int, int]:
     """Compute per-class statistics for edge features using streaming approach."""
@@ -238,7 +233,16 @@ def analyze_graph_data(
 ):
     """
     Memory-efficient analysis of graph data from .pt files.
-    Computes separate scaling statistics for node features (10) and edge features (12).
+    Computes separate scaling statistics for node features and edge features.
+
+    Edge features (17):
+        dist, align_i, align_j, lin_diff, scat_avg, z_diff, z_min,
+        directional_agreement, vertical_alignment, thickness_diff, verticality_diff,
+        horiz_dist, h_v_ratio, plan_diff, plan_avg, thick_diff, vert_product
+
+    Node features (10):
+        thickness, verticality, linearity, planarity, scattering,
+        height, eigenvalue_ratio, omnivariance, height_variation, pca_z
     """
     split_dir = edges_dir / split
     pt_files = sorted(split_dir.glob('*.pt'))
@@ -313,35 +317,45 @@ def analyze_graph_data(
         print(f"  Single-class graphs: {single_class_graphs:,} ({single_class_graphs/len(pt_files)*100:.1f}%)")
 
     # =========================================================================
-    # FEATURE NAMES
+    # FEATURE NAMES — updated to match new preprocessing output
     # =========================================================================
+
+    # Edge: 17 features
     edge_feature_names = [
-        "dist",
-        "align_i",
-        "align_j",
-        "lin_diff",
-        "scat_avg",
-        "z_diff",
-        "z_min",
-        "directional_agreement",
-        "vertical_alignment",
-        "thickness_diff",
-        "verticality_diff"
+        "dist",                  # 1  euclidean distance between SP centroids
+        "align_i",               # 2  alignment of edge vector with PCA dir of src
+        "align_j",               # 3  alignment of edge vector with PCA dir of dst
+        "lin_diff",              # 4  linearity difference
+        "scat_avg",              # 5  average scattering
+        "z_diff",                # 6  vertical step (abs delta z)
+        "z_min",                 # 7  absolute height of lower SP
+        "directional_agreement", # 8  |dot(pca_i, pca_j)| — axis alignment
+        "vertical_alignment",    # 9  |pca_z_i| * |pca_z_j|
+        "thickness_diff",        # 10 abs thickness difference
+        "verticality_diff",      # 11 abs verticality difference
+        "horiz_dist",            # 12 horizontal (XY) distance
+        "h_v_ratio",             # 13 horizontal/vertical ratio — low = vertical connection
+        "plan_diff",             # 14 planarity difference
+        "plan_avg",              # 15 average planarity — high = crown boundary
+        "thick_diff",            # 16 thickness difference (from edge_features_vectorized)
+        "vert_product",          # 17 verticality product — high = both SPs are vertical (trunk)
     ]
     edge_feature_names = edge_feature_names[:n_edge_features]
     while len(edge_feature_names) < n_edge_features:
         edge_feature_names.append(f"edge_feature_{len(edge_feature_names)}")
 
+    # Node: 10 features
     node_feature_names = [
-        "thickness",
-        "verticality",
-        "linearity",
-        "planarity",
-        "scattering",
-        "height",
-        "eigenvalue_ratio",
-        "omnivariance",
-        "height_variation"
+        "thickness",         # 1
+        "verticality",       # 2
+        "linearity",         # 3
+        "planarity",         # 4
+        "scattering",        # 5
+        "height",            # 6  absolute z of centroid
+        "eigenvalue_ratio",  # 7
+        "omnivariance",      # 8
+        "height_variation",  # 9
+        "pca_z",             # 10 |pca_dir_z| — how vertical is the SP's main axis
     ]
     node_feature_names = node_feature_names[:n_node_features]
     while len(node_feature_names) < n_node_features:
@@ -360,7 +374,7 @@ def analyze_graph_data(
         edge_stats.update(edge_features)
 
     # =========================================================================
-    # STREAMING STATISTICS — NODE FEATURES  (THE MISSING PIECE)
+    # STREAMING STATISTICS — NODE FEATURES
     # =========================================================================
     if verbose:
         print(f"\n{'='*80}")
@@ -427,11 +441,11 @@ def analyze_graph_data(
         print(f"\n{'='*80}")
         print("EDGE FEATURE SCALING STATISTICS")
         print(f"{'='*80}")
-        print(f"{'Feature':<25} {'Min':>10} {'Max':>10} {'Mean':>10} {'Std':>10} {'Median':>10}")
-        print("-" * 80)
+        print(f"{'Feature':<30} {'Min':>10} {'Max':>10} {'Mean':>10} {'Std':>10} {'Median':>10}")
+        print("-" * 85)
         for name in edge_feature_names:
             s = edge_feature_stats[name]
-            print(f"{name:<25} {s['min']:>10.4f} {s['max']:>10.4f} {s['mean']:>10.4f} "
+            print(f"{name:<30} {s['min']:>10.4f} {s['max']:>10.4f} {s['mean']:>10.4f} "
                   f"{s['std']:>10.4f} {s['median']:>10.4f}")
 
         print(f"\n{'='*80}")
@@ -445,7 +459,7 @@ def analyze_graph_data(
                   f"{s['std']:>10.4f} {s['median']:>10.4f}")
 
     # =========================================================================
-    # SAVE TO JSON  — now with separate node_* and edge_* scaling keys
+    # SAVE TO JSON
     # =========================================================================
     scaling_params = None
     if save_stats:
@@ -477,7 +491,7 @@ def analyze_graph_data(
                 'class_1_only_graphs': class_1_only
             },
 
-            # ---- EDGE scaling (12 values each) ----
+            # ---- EDGE scaling (n_edge_features values each) ----
             'edge_standard_scaling': {
                 'means': [edge_feature_stats[n]['mean'] for n in edge_feature_names],
                 'stds':  [edge_feature_stats[n]['std']  for n in edge_feature_names]
@@ -492,7 +506,7 @@ def analyze_graph_data(
                 'q75s':    [edge_feature_stats[n]['q75']    for n in edge_feature_names]
             },
 
-            # ---- NODE scaling (10 values each) ----
+            # ---- NODE scaling (n_node_features values each) ----
             'node_standard_scaling': {
                 'means': [node_feature_stats[n]['mean'] for n in node_feature_names],
                 'stds':  [node_feature_stats[n]['std']  for n in node_feature_names]
@@ -518,6 +532,7 @@ def analyze_graph_data(
         
         if verbose:
             print(f"\nScaling parameters saved to: {output_file}")
+            print(f"  Edge features: {n_edge_features}  |  Node features: {n_node_features}")
             print(f"  Edge scaling keys: edge_standard_scaling, edge_minmax_scaling, edge_robust_scaling")
             print(f"  Node scaling keys: node_standard_scaling, node_minmax_scaling, node_robust_scaling")
 
@@ -591,7 +606,7 @@ def analyze_graph_data(
             print("\nFeature importances:")
             for name, imp in sorted(zip(edge_feature_names, rf.feature_importances_),
                                     key=lambda x: x[1], reverse=True):
-                print(f"  {name:<30}: {imp:.4f}")
+                print(f"  {name:<35}: {imp:.4f}")
 
     # =========================================================================
     # CLASS SEPARABILITY (edge features)
@@ -606,15 +621,15 @@ def analyze_graph_data(
     )
 
     if verbose:
-        print(f"\n{'Feature':<30} {'Class 0':>12} {'Class 1':>12} {'Diff':>10} {'Cohen d':>10}")
-        print("-" * 78)
+        print(f"\n{'Feature':<35} {'Class 0':>12} {'Class 1':>12} {'Diff':>10} {'Cohen d':>10}")
+        print("-" * 83)
         for i, name in enumerate(edge_feature_names):
             m0 = class_0_stats.mean[i]
             m1 = class_1_stats.mean[i]
             diff = abs(m0 - m1)
             pooled_std = np.sqrt((class_0_stats.variance[i] + class_1_stats.variance[i]) / 2)
             d = diff / (pooled_std + 1e-10)
-            print(f"  {name:<30} {m0:>12.4f} {m1:>12.4f} {diff:>10.4f} {d:>10.4f}")
+            print(f"  {name:<35} {m0:>12.4f} {m1:>12.4f} {diff:>10.4f} {d:>10.4f}")
 
     return edge_feature_stats, node_feature_stats, scaling_params
 

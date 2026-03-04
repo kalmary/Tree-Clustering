@@ -38,7 +38,7 @@ class EdgeClassifierGNN(nn.Module):
         # GAT layers
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
-        
+            
         for i in range(self.num_layers):
             self.convs.append(
                 GATConv(
@@ -48,7 +48,11 @@ class EdgeClassifierGNN(nn.Module):
                     edge_dim=self.edge_feat_dim
                 )
             )
-            self.batch_norms.append(nn.BatchNorm1d(self.hidden_dim))
+            # skip BatchNorm for first layer
+            if i == 0:
+                self.batch_norms.append(nn.Identity())
+            else:
+                self.batch_norms.append(nn.BatchNorm1d(self.hidden_dim))
         
         # Edge classifier
         edge_input_dim = self.hidden_dim * 2 + self.edge_feat_dim
@@ -164,7 +168,7 @@ class EdgeClassifierGNN(nn.Module):
 
         for i, conv in enumerate(self.convs):
             x_new = conv(x, edge_index, edge_attr=edge_attr)
-            x_new = self.batch_norms[i](x_new)
+            x_new = self.batch_norms[i](x_new)  # Identity for i==0, BatchNorm for i>0
             x_new = F.relu(x_new)
             x_new = F.dropout(x_new, p=self.dropout, training=self.training)
             x = x + x_new if i > 0 else x_new
@@ -175,7 +179,7 @@ class EdgeClassifierGNN(nn.Module):
         logits         = self.edge_classifier(edge_input).squeeze(-1)
 
         if return_embeddings:
-            return logits, x, edge_index   # x used for contrastive loss
+            return logits, x, edge_index
         return logits
 
 

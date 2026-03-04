@@ -1,0 +1,369 @@
+import shutil
+import subprocess
+import tempfile
+import os
+import uuid
+import struct
+
+import numpy as np
+from scipy.spatial import Delaunay
+
+
+class TreeSegmRay:
+    def __init__(
+        self,
+        verbose: bool = False,
+        height_min: float = 2.0,
+        max_diameter: float = 0.9,
+        crop_length: float = 1.0,
+        distance_limit: float = 1.0,
+        girth_height_ratio: float = 0.12,
+        gravity_factor: float = 0.3,
+        global_taper: float = None,
+        global_taper_factor: float = None,
+        grid_width: float = None,
+        use_rays: bool = False,
+        segment_branches: bool = False,
+        tree_label: int = None,
+        ground_label: int = None,
+    ):
+        self.verbose             = verbose
+        self.height_min          = height_min
+        self.max_diameter        = max_diameter
+        self.crop_length         = crop_length
+        self.distance_limit      = distance_limit
+        self.girth_height_ratio  = girth_height_ratio
+        self.gravity_factor      = gravity_factor
+        self.global_taper        = global_taper
+        self.global_taper_factor = global_taper_factor
+        self.grid_width          = grid_width
+        self.use_rays            = use_rays
+        self.segment_branches    = segment_branches
+        self.tree_label          = tree_label
+        self.ground_label        = ground_label
+
+        self._container_name = None
+        self._shared_tmpdir  = None
+        self._backend        = self._detect_backend()
+
+        if self.verbose:
+            print(f"[TreeSegmRay] Backend: {self._backend}")
+
+    # ------------------------------------------------------------------
+    # Container management
+    # ------------------------------------------------------------------
+
+    def start_container(self):
+        """
+        Start a persistent Docker container so segment() calls reuse it
+        instead of spinning up a new container each time (~1-2s saved per call).
+        Call rm_container() when you are done.
+        No-op if backend is native or container is already running.
+        """
+        if self._backend != "docker":
+            if self.verbose:
+                print("[TreeSegmRay] start_container() ignored — using native backend.")
+            return
+        if self._container_name is not None:
+            if self.verbose:
+                print(f"[TreeSegmRay] Container '{self._container_name}' already running.")
+            return
+
+        self._shared_tmpdir  = tempfile.mkdtemp(prefix="treesegmray_persistent_", dir=os.path.expanduser("~"))
+        self._container_name = f"treesegmray_{uuid.uuid4().hex[:8]}"
+        subprocess.run([
+            "docker", "run", "-d",
+            "--name", self._container_name,
+            "-v",     f"{self._shared_tmpdir}:/data",
+            "ghcr.io/csiro-robotics/raycloudtools:latest",
+            "sleep", "infinity",
+        ], check=True, capture_output=not self.verbose)
+
+        if self.verbose:
+            print(f"[TreeSegmRay] Container '{self._container_name}' started.")
+
+    def rm_container(self):
+        """
+        Stop and remove the persistent Docker container and its temp directory.
+        Safe to call even if no container is running.
+        """
+        if self._container_name:
+            subprocess.run(["docker", "rm", "-f", self._container_name],
+                           capture_output=True)
+            if self.verbose:
+                print(f"[TreeSegmRay] Container '{self._container_name}' removed.")
+            self._container_name = None
+
+        if self._shared_tmpdir:
+            shutil.rmtree(self._shared_tmpdir, ignore_errors=True)
+            self._shared_tmpdir = None
+
+    # ------------------------------------------------------------------
+    # Backend
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_backend() -> str:
+        if shutil.which("rayextract"):
+            return "native"
+        if shutil.which("docker"):
+            # start daemon if not running
+            if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+                subprocess.run(["sudo", "systemctl", "start", "docker"], check=True)
+                subprocess.run(["docker", "info"], check=True)
+
+            r = subprocess.run(
+                ["docker", "image", "inspect",
+                "ghcr.io/csiro-robotics/raycloudtools:latest"],
+                capture_output=True,
+            )
+            if r.returncode == 0:
+                return "docker"
+            raise EnvironmentError(
+                "Docker found but raycloudtools image not pulled.\n"
+            )
+        raise EnvironmentError(
+            "raycloudtools not found"
+        )
+
+    def _run(self, cmd: list, workdir: str):
+        if self._backend == "docker":
+            def to_container(arg):
+                if os.path.isabs(arg):
+                    return "/data/" + os.path.basename(arg)
+                return arg
+
+            if self._container_name:
+                cmd = ["docker", "exec", self._container_name] + \
+                      [to_container(a) for a in cmd]
+            else:
+                cmd = [
+                    "docker", "run", "--rm",
+                    "-v", f"{workdir}:/data",
+                    "ghcr.io/csiro-robotics/raycloudtools:latest",
+                ] + [to_container(a) for a in cmd]
+
+        if self.verbose:
+            print(f"[TreeSegmRay] $ {' '.join(cmd)}")
+
+        result = subprocess.run(
+            cmd, capture_output=not self.verbose,
+            text=True, cwd=workdir,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"rayextract failed (exit {result.returncode}):\n"
+                f"{result.stderr or '(no stderr)'}"
+            )
+
+    # ------------------------------------------------------------------
+    # Internal PLY helpers — purely a transport format for rayextract
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_raycloud_ply(points: np.ndarray, path: str):
+        n      = len(points)
+        pts    = points.astype(np.float32)
+        nxyz   = np.tile(np.float32([0, 0, 10]), (n, 1))
+        times  = np.zeros(n, dtype=np.float64)
+        colors = np.full((n, 4), 128, dtype=np.uint8)
+
+        with open(path, "wb") as f:
+            f.write((
+                "ply\nformat binary_little_endian 1.0\n"
+                "comment generated by TreeSegmRay\n"
+                f"element vertex {n:010d}\n"
+                "property float x\nproperty float y\nproperty float z\n"
+                "property double time\n"
+                "property float nx\nproperty float ny\nproperty float nz\n"
+                "property uchar red\nproperty uchar green\n"
+                "property uchar blue\nproperty uchar alpha\nend_header\n"
+            ).encode("ascii"))
+            for i in range(n):
+                f.write(pts[i].tobytes())
+                f.write(times[i].tobytes())
+                f.write(nxyz[i].tobytes())
+                f.write(colors[i].tobytes())
+
+    @staticmethod
+    def _write_ground_mesh_ply(ground_xyz: np.ndarray, path: str):
+        """Write a binary PLY mesh — rayextract only accepts binary format."""
+        tri   = Delaunay(ground_xyz[:, :2])
+        verts = ground_xyz.astype(np.float32)
+        faces = tri.simplices.astype(np.int32)
+
+        with open(path, "wb") as f:
+            # header (ASCII)
+            f.write((
+                "ply\nformat binary_little_endian 1.0\n"
+                "comment generated by TreeSegmRay\n"
+                f"element vertex {len(verts)}\n"
+                "property float x\nproperty float y\nproperty float z\n"
+                f"element face {len(faces)}\n"
+                "property list uchar int vertex_indices\n"
+                "end_header\n"
+            ).encode("ascii"))
+            # vertices — 3 × float32 each
+            f.write(verts.tobytes())
+            # faces — uchar count (always 3) + 3 × int32
+            for face in faces:
+                f.write(struct.pack("<B3i", 3, face[0], face[1], face[2]))
+
+    @staticmethod
+    def _read_labels_from_segmented_ply(path: str) -> np.ndarray:
+        with open(path, "rb") as f:
+            header_lines = []
+            while True:
+                line = f.readline().decode("ascii").strip()
+                header_lines.append(line)
+                if line == "end_header":
+                    break
+
+            n_points, props = 0, []
+            for line in header_lines:
+                if line.startswith("element vertex"):
+                    n_points = int(line.split()[-1])
+                elif line.startswith("property"):
+                    parts = line.split()
+                    props.append((parts[1], parts[2]))
+
+            type_map = {
+                "float": "f", "float32": "f", "double": "d", "float64": "d",
+                "int": "i",   "int32": "i",   "uint": "I",   "uint32": "I",
+                "short": "h", "ushort": "H",  "uchar": "B",  "uint8": "B",
+                "char": "b",  "int8": "b",
+            }
+            names  = [n for _, n in props]
+            fmt    = "<" + "".join(type_map[t] for t, _ in props)
+            stride = struct.calcsize(fmt)
+            ri, gi, bi = names.index("red"), names.index("green"), names.index("blue")
+            raw = f.read(n_points * stride)
+
+        records = struct.iter_unpack(fmt, raw)
+        colors  = np.array([(r[ri], r[gi], r[bi]) for r in records], dtype=np.int32)
+        packed  = colors[:, 0] << 16 | colors[:, 1] << 8 | colors[:, 2]
+        _, labels = np.unique(packed, return_inverse=True)
+        return labels.astype(np.int64)
+
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        """
+        Segment a point cloud into individual tree instances.
+
+        Args:
+            xyz:    (N, 3) float array of XYZ positions.
+            labels: (N,) int array of semantic labels.
+
+        Returns:
+            out_labels: (N,) int64 array of instance IDs.
+                        Tree points: ID >= 0.
+                        All other points: -1.
+        """
+        tree_mask   = labels == self.tree_label
+        ground_mask = labels == self.ground_label
+
+        tree_xyz   = xyz[tree_mask].copy()
+        ground_xyz = xyz[ground_mask].copy()
+
+        if self.verbose:
+            print(f"[TreeSegmRay] Trees: {len(tree_xyz):,} pts  "
+                  f"Ground: {len(ground_xyz):,} pts")
+
+        # centre XY for numerical stability
+        xy_mean          = tree_xyz[:, :2].mean(axis=0)
+        tree_xyz[:,   :2] -= xy_mean
+        ground_xyz[:, :2] -= xy_mean
+
+        own_tmpdir = self._shared_tmpdir is None
+        tmpdir     = tempfile.mkdtemp(prefix="treesegmray_", dir=os.path.expanduser("~")) if own_tmpdir \
+                     else self._shared_tmpdir
+
+        cloud_ply  = os.path.join(tmpdir, "cloud.ply")
+        ground_ply = os.path.join(tmpdir, "ground.ply")
+
+        try:
+            self._write_raycloud_ply(tree_xyz, cloud_ply)
+            if len(ground_xyz) > 0:
+                self._write_ground_mesh_ply(ground_xyz, ground_ply)
+            else:
+                if self.verbose:
+                    print("[TreeSegmRay] No ground points found — skipping ground mesh.")
+                ground_ply = None
+
+            if ground_ply is None:
+                raise RuntimeError(
+                    f"No ground points found for label {self.ground_label}. "
+                    "Cannot run rayextract trees without a ground mesh."
+                )
+
+            cmd = [
+                "rayextract", "trees", cloud_ply, ground_ply,
+                "--height_min",         str(self.height_min),
+                "--max_diameter",       str(self.max_diameter),
+                "--crop_length",        str(self.crop_length),
+                "--distance_limit",     str(self.distance_limit),
+                "--girth_height_ratio", str(self.girth_height_ratio),
+                "--gravity_factor",     str(self.gravity_factor),
+            ]
+            if self.global_taper is not None:
+                cmd += ["--global_taper",        str(self.global_taper)]
+            if self.global_taper_factor is not None:
+                cmd += ["--global_taper_factor", str(self.global_taper_factor)]
+            if self.grid_width is not None:
+                cmd += ["--grid_width",          str(self.grid_width)]
+            if self.use_rays:
+                cmd.append("--use_rays")
+            if self.segment_branches:
+                cmd.append("--branch_segmentation")
+            if self.verbose:
+                cmd.append("--verbose")
+
+            self._run(cmd, workdir=tmpdir)
+
+            seg_ply = os.path.join(tmpdir, "cloud_segmented.ply")
+            if not os.path.exists(seg_ply):
+                raise RuntimeError(
+                    f"Segmented output not found at {seg_ply}.\n"
+                    "Run with verbose=True to inspect raycloudtools output."
+                )
+
+            tree_instance_labels = self._read_labels_from_segmented_ply(seg_ply)
+
+        finally:
+            if own_tmpdir:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+        out_labels = np.full(len(xyz), -1, dtype=np.int64)
+        out_labels[tree_mask] = tree_instance_labels
+        return out_labels
+
+
+# ---------------------------------------------------------------------------
+# Example
+# ---------------------------------------------------------------------------
+
+def main():
+    import laspy
+    from utils.plot_cloud import plot_cloud
+
+    seg = TreeSegmRay(verbose=True, height_min=1.5, max_diameter=0.9, distance_limit=0.2, tree_label=7, ground_label=1)
+    seg.start_container()
+
+    for path in ["data/split/ITWL_Grajewo19_cut_small.laz"]:
+        las = laspy.read(path)
+        xyz   = np.vstack([las.x, las.y, las.z]).T
+        labels = np.asarray(las.classification)
+
+        labels = seg.segment(xyz, labels)
+
+        plot_cloud(xyz, labels)
+
+    seg.rm_container()
+
+
+if __name__ == "__main__":
+    main()

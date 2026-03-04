@@ -13,7 +13,7 @@
 
     "general_convention_comment": "start, stop, step",
     
-    "learning_rate": [0.001, 0.00001, 0.1],
+    "learning_rate": [0.01, 0.00001, 0.1],
     "weight_decay": [0.001, 0.00001, 0.1],
     "focal_gamma": [1.25, 2.5, 0.25],
     "learning_rate_comment": "low_lr, high_lr, factor",
