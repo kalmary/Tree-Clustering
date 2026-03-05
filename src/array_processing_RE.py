@@ -429,7 +429,7 @@ def main():
     import laspy
     from utils.plot_cloud import plot_cloud
 
-    seg = TreeSegmRay(height_min=0.9, max_diameter=0.8, distance_limit=0.25, gravity_factor=0.6, use_rays=False, ground_label=1, tree_label=7, verbose = True)
+    seg = TreeSegmRay(height_min=0.9, max_diameter=0.8, distance_limit=0.25, gravity_factor=0.6, use_rays=False, ground_label=1, tree_label=7, verbose = False)
     seg.start_container()
 
     for path in ["data/split/ITWL_Grajewo19_cut_small.laz"]:
