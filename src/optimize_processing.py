@@ -10,6 +10,7 @@ import random
 
 from array_processing_RE import TreeSegmRay
 from utils.instance_segmentation_evaluation import evaluate_segmentation
+import datetime
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -97,15 +98,10 @@ def objective(
 
 
 def optimize_thresholds(
-    model_name: str,
     data_dir: Union[str, pth.Path],
     n_trials: int = 50,
-    device_name: str = "cpu",
-    radius: float = 1.5,
-    voxel_factor: float = 0.78,
-    max_nodes: int = 300,
     file_ratio: float = 0.4,
-    study_name: str = "threshold_optimization_TF025",
+    study_name: str = "threshold_optimization_RE",
     storage: str = 'sqlite:///db.sqlite3',
 ) -> dict:
     """
@@ -125,14 +121,8 @@ def optimize_thresholds(
     Returns:
         dict with best_edge_threshold, best_high_threshold, best_f1, all best_params.
     """
-    study_name = study_name + f"_{model_name}"
-    device = (
-        torch.device("cuda")
-        if ("cuda" in device_name.lower() or "gpu" in device_name.lower())
-        and torch.cuda.is_available()
-        else torch.device("cpu")
-    )
-    logger.info(f"Using device: {device}")
+    date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+    study_name = study_name + f"_{datetime}"
 
     data_dir = pth.Path(data_dir)
     data_files = sorted(data_dir.glob("*.npy"))
@@ -153,12 +143,7 @@ def optimize_thresholds(
     study.optimize(
         lambda trial: objective(
             trial,
-            model_name=model_name,
             data_files=data_files,
-            device=device,
-            radius=radius,
-            voxel_factor=voxel_factor,
-            max_nodes=max_nodes,
         ),
         n_trials=n_trials,
         show_progress_bar=True,
@@ -185,8 +170,6 @@ def optimize_thresholds(
 
 if __name__ == "__main__":
     result = optimize_thresholds(
-        model_name="EdgeGNNV5_2",
         data_dir="data/split/test",
-        n_trials=50,
-        device_name="cuda",
+        n_trials=50
     )
