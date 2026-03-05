@@ -122,7 +122,7 @@ def optimize_thresholds(
         dict with best_edge_threshold, best_high_threshold, best_f1, all best_params.
     """
     date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
-    study_name = study_name + f"_{datetime}"
+    study_name = study_name + f"_{date}"
 
     data_dir = pth.Path(data_dir)
     data_files = sorted(data_dir.glob("*.npy"))

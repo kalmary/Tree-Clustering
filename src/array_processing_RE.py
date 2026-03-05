@@ -323,55 +323,66 @@ class TreeSegmRay:
                 result[mask] = -1
         return result
 
-    def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _estimate_ground(tree_xyz: np.ndarray, grid_size: float = 2.0) -> np.ndarray:
         """
-        Segment a point cloud into individual tree instances.
-
-        Args:
-            xyz:    (N, 3) float array of XYZ positions.
-            labels: (N,) int array of semantic labels.
-
-        Returns:
-            out_labels: (N,) int64 array of instance IDs.
-                        Tree points: ID >= 0.
-                        All other points: -1.
+        Estimate ground surface from lowest points in a 2D grid.
+        Used when no ground labels are available.
         """
-        tree_mask   = labels == self.tree_label
-        ground_mask = labels == self.ground_label
+        xs = tree_xyz[:, 0]
+        ys = tree_xyz[:, 1]
 
-        tree_xyz   = xyz[tree_mask].copy()
-        ground_xyz = xyz[ground_mask].copy()
+        x_bins = np.arange(xs.min(), xs.max() + grid_size, grid_size)
+        y_bins = np.arange(ys.min(), ys.max() + grid_size, grid_size)
+
+        ground_pts = []
+        for xi in range(len(x_bins) - 1):
+            for yi in range(len(y_bins) - 1):
+                mask = (
+                    (xs >= x_bins[xi]) & (xs < x_bins[xi + 1]) &
+                    (ys >= y_bins[yi]) & (ys < y_bins[yi + 1])
+                )
+                if mask.sum() > 0:
+                    lowest = tree_xyz[mask][tree_xyz[mask, 2].argmin()]
+                    ground_pts.append(lowest)
+
+        return np.array(ground_pts, dtype=np.float32)
+
+    def segment(self, xyz: np.ndarray, labels: np.ndarray = None) -> np.ndarray:
+        if labels is not None and self.tree_label is not None and self.ground_label is not None:
+            tree_mask   = labels == self.tree_label
+            ground_mask = labels == self.ground_label
+            tree_xyz    = xyz[tree_mask].copy()
+            ground_xyz  = xyz[ground_mask].copy()
+        else:
+            tree_xyz   = xyz.copy()
+            ground_xyz = None
+            tree_mask  = np.ones(len(xyz), dtype=bool)
 
         if self.verbose:
-            print(f"[TreeSegmRay] Trees: {len(tree_xyz):,} pts  "
-                  f"Ground: {len(ground_xyz):,} pts")
+            if ground_xyz is not None:
+                print(f"[TreeSegmRay] Trees: {len(tree_xyz):,} pts  Ground: {len(ground_xyz):,} pts")
+            else:
+                print(f"[TreeSegmRay] Trees: {len(tree_xyz):,} pts  Ground: estimated from lowest points")
 
-        # centre XY for numerical stability
-        xy_mean          = tree_xyz[:, :2].mean(axis=0)
-        tree_xyz[:,   :2] -= xy_mean
-        ground_xyz[:, :2] -= xy_mean
+        xy_mean           = tree_xyz[:, :2].mean(axis=0)
+        tree_xyz[:, :2]  -= xy_mean
+
+        if ground_xyz is not None and len(ground_xyz) > 0:
+            ground_xyz[:, :2] -= xy_mean
+        else:
+            ground_xyz = self._estimate_ground(tree_xyz)
 
         own_tmpdir = self._shared_tmpdir is None
         tmpdir     = tempfile.mkdtemp(prefix="treesegmray_", dir=os.path.expanduser("~")) if own_tmpdir \
-                     else self._shared_tmpdir
+                    else self._shared_tmpdir
 
         cloud_ply  = os.path.join(tmpdir, "cloud.ply")
         ground_ply = os.path.join(tmpdir, "ground.ply")
 
         try:
             self._write_raycloud_ply(tree_xyz, cloud_ply)
-            if len(ground_xyz) > 0:
-                self._write_ground_mesh_ply(ground_xyz, ground_ply)
-            else:
-                if self.verbose:
-                    print("[TreeSegmRay] No ground points found — skipping ground mesh.")
-                ground_ply = None
-
-            if ground_ply is None:
-                raise RuntimeError(
-                    f"No ground points found for label {self.ground_label}. "
-                    "Cannot run rayextract trees without a ground mesh."
-                )
+            self._write_ground_mesh_ply(ground_xyz, ground_ply)
 
             cmd = [
                 "rayextract", "trees", cloud_ply, ground_ply,
@@ -412,14 +423,12 @@ class TreeSegmRay:
             )
             tree_instance_labels = self._remove_small_clusters(tree_instance_labels, min_points=1500)
             tree_instance_labels = self._reduce_labels(tree_instance_labels)
-            
 
         finally:
             if own_tmpdir:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
         return tree_instance_labels
-
 
 # ---------------------------------------------------------------------------
 # Example
