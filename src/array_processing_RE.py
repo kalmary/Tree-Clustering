@@ -250,7 +250,12 @@ class TreeSegmRay:
     def _connect_floating_clusters(self, tree_labels: np.ndarray, tree_xyz: np.ndarray,
                                 ground_xyz: np.ndarray,
                                 ground_z_threshold: float = 0.5,
-                                min_cluster_size: int = 5000) -> np.ndarray:
+                                min_cluster_size: int = 5000,
+                                max_tilt_deg: float = 30.0) -> np.ndarray:
+        """
+        max_tilt_deg: maximum tilt angle from vertical (degrees) to still
+                    consider a grounded cluster as belonging below a floating one.
+        """
         ground_z_max  = ground_xyz[:, 2].max()
         unique_labels = np.unique(tree_labels)
 
@@ -278,20 +283,45 @@ class TreeSegmRay:
             tree_xyz[tree_labels == lbl].mean(axis=0) for lbl in floating
         ], dtype=np.float32)
 
-        # match each floating cluster to the nearest grounded one,
-        # searching in 3D so clusters directly below are also candidates
-        tree = cKDTree(grounded_centroids)
-        _, nn = tree.query(floating_centroids, k=1)
+        tilt_tolerance = np.tan(np.deg2rad(max_tilt_deg))  # XY per unit Z
+        result  = tree_labels.copy()
+        kdtree  = cKDTree(grounded_centroids)
 
-        result = tree_labels.copy()
         for i, lbl in enumerate(floating):
-            result[result == lbl] = grounded[nn[i]]
+            fc         = floating_centroids[i]
+            below_mask = grounded_centroids[:, 2] < fc[2]
+
+            if below_mask.any():
+                candidates    = grounded_centroids[below_mask]
+                candidate_ids = grounded[below_mask]
+
+                dz          = fc[2] - candidates[:, 2]
+                dxy         = np.linalg.norm(fc[:2] - candidates[:, :2], axis=1)
+                tilt_score  = dxy - tilt_tolerance * dz
+                best        = np.argmin(tilt_score)
+                target      = candidate_ids[best]
+            else:
+                _, nn  = kdtree.query(fc, k=1)
+                target = grounded[nn]
+
+            result[result == lbl] = target
 
         return result
     
     def _reduce_labels(self, labels: np.ndarray) -> np.ndarray:
-        _, labels[labels!=-1] = np.unique(labels[labels!=-1], return_inverse=True)
+        _, labels[labels!=-1] = np.unique(labels[labels!=-1], return_inverse=True) # move from 0 to -1
+        labels[labels!=-1] -= 1
+        
         return labels
+    
+    def _remove_small_clusters(self, tree_labels: np.ndarray,
+                                min_points: int = 100) -> np.ndarray:
+        result = tree_labels.copy()
+        for lbl in np.unique(tree_labels):
+            mask = tree_labels == lbl
+            if mask.sum() < min_points:
+                result[mask] = -1
+        return result
 
     def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
         """
@@ -375,11 +405,12 @@ class TreeSegmRay:
                 )
 
             tree_instance_labels = self._read_labels_from_segmented_ply(seg_ply)
-            # tree_instance_labels = self._connect_floating_clusters(
-            #     tree_instance_labels, tree_xyz, ground_xyz,
-            #     ground_z_threshold=0.5,
-            #     min_cluster_size=2000
-            # )
+            tree_instance_labels = self._connect_floating_clusters(
+                tree_instance_labels, tree_xyz, ground_xyz,
+                ground_z_threshold=0.5,
+                min_cluster_size=500
+            )
+            tree_instance_labels = self._remove_small_clusters(tree_instance_labels, min_points=1500)
             tree_instance_labels = self._reduce_labels(tree_instance_labels)
             
 
@@ -398,7 +429,7 @@ def main():
     import laspy
     from utils.plot_cloud import plot_cloud
 
-    seg = TreeSegmRay(height_min=1.2, max_diameter=0.8, distance_limit=0.15, use_rays=False, ground_label=1, tree_label=7, verbose = True)
+    seg = TreeSegmRay(height_min=0.9, max_diameter=0.8, distance_limit=0.25, gravity_factor=0.6, use_rays=False, ground_label=1, tree_label=7, verbose = True)
     seg.start_container()
 
     for path in ["data/split/ITWL_Grajewo19_cut_small.laz"]:
@@ -406,9 +437,16 @@ def main():
         xyz   = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
 
+        plot_cloud(xyz, labels)
+
         tree_xyz    = xyz[labels == seg.tree_label]
         tree_labels = seg.segment(xyz, labels)
         plot_cloud(tree_xyz, tree_labels)
+
+        for tree in np.unique(tree_labels):
+            mask = tree_labels == tree
+            print(f"Tree {tree}: {mask.sum()} points")
+            plot_cloud(tree_xyz[mask], tree_labels[mask])
 
     seg.rm_container()
 
