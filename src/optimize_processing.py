@@ -8,7 +8,7 @@ from typing import Union
 import tqdm
 import random
 
-from array_processing import TreeSegmGNN
+from array_processing_RE import TreeSegmRay
 from utils.instance_segmentation_evaluation import evaluate_segmentation
 
 
@@ -17,33 +17,24 @@ logger = logging.getLogger(__name__)
 
 
 def evaluate_thresholds(
-    model_name: str,
     data_files: list[pth.Path],
-    output_probs: bool = False,
-    edge_threshold: float = False,
-    crown_threshold_reduction: float = 0.0,
-    device: torch.device = torch.device('cuda'),
-    radius: float = 1.5,
-    voxel_factor: float = 0.78,
-    max_nodes: int = 600,
+    height_min: float,
+    max_diameter: float,
+    distance_limit: float,
+    gravity_factor: float,
+    use_rays: bool,
     verbose: bool = True,
 ) -> dict:
     """
     Run segmentation on all .npy files and return aggregated metrics.
     Each file is expected to have XYZ in [:, :3] and ground-truth labels in [:, -1].
     """
-    segmenter = TreeSegmGNN(
-        model_name=model_name,
-        device=device,
-        use_mp=True,
-        radius=radius,
-        voxel_factor=voxel_factor,
-        max_nodes=max_nodes,
-        use_probs=output_probs,
-        edge_threshold=edge_threshold,
-        crown_threshold_reduction=crown_threshold_reduction,
-        verbose=verbose,
-    )
+    segmenter = TreeSegmRay(height_min=height_min,
+                            max_diameter=max_diameter,
+                            distance_limit=distance_limit,
+                            gravity_factor=gravity_factor,
+                            use_rays=use_rays,
+                            verbose = False)
 
     all_metrics = []
     
@@ -51,6 +42,7 @@ def evaluate_thresholds(
     if verbose:
         pbar = tqdm.tqdm(data_files, desc="Processing files", position=0, leave=False)
 
+    segmenter.start_container()
     for file_path in pbar:
         cloud = np.load(file_path)
         xyz = cloud[:, :3]
@@ -62,6 +54,7 @@ def evaluate_thresholds(
 
         logger.debug(f"{file_path.name}: seg_quality={metrics['seg_quality']:.4f}")
 
+    segmenter.rm_container()
     del segmenter
 
     # Aggregate metrics across all files (mean)
@@ -74,33 +67,27 @@ def evaluate_thresholds(
 
 def objective(
     trial: optuna.Trial,
-    model_name: str,
     data_files: list[pth.Path],
-    device: torch.device,
-    radius: float,
-    voxel_factor: float,
-    max_nodes: int,
+
 ) -> float:
-    edge_threshold = trial.suggest_float("edge_threshold", 0.2, 0.7, step=0.05)
-    crown_threshold_reduction = trial.suggest_float("crown_threshold_reduction", 0.0, 0.5, step=0.1)
-    output_probs = trial.suggest_categorical("output_probs", [False, True])
 
-    logger.info(f"Trial {trial.number}: edge_threshold={edge_threshold:.2f}, crown_threshold_reduction={crown_threshold_reduction:.2f}") 
+    height_min = trial.suggest_float("height_min", 0.5, 2.0, step=0.25)
+    max_diameter = trial.suggest_float("max_diameter", 0.5, 1.5, step=0.1)
+    distance_limit = trial.suggest_float("distance_limit", 0.1, 2.0, step=0.05)
+    gravity_factor = trial.suggest_float("gravity_factor", 0.1, 0.9, step=0.1)
+    use_rays = trial.suggest_categorical("use_rays", [True, False])
 
-
-    if crown_threshold_reduction <= edge_threshold:
-        raise optuna.exceptions.TrialPruned()
+    logger.info(f"Trial {trial.number}") 
 
     metrics = evaluate_thresholds(
-        model_name=model_name,
         data_files=data_files,
-        output_probs=output_probs,
-        edge_threshold=edge_threshold,
-        crown_threshold_reduction=crown_threshold_reduction,
-        device=device,
-        radius=radius,
-        voxel_factor=voxel_factor,
-        max_nodes=max_nodes,
+        height_min=height_min,
+        max_diameter=max_diameter,
+        distance_limit=distance_limit,
+        gravity_factor=gravity_factor,
+        use_rays=use_rays,
+        verbose=True
+        
     )
 
     seq_q = metrics['seg_quality']

@@ -437,11 +437,11 @@ def main():
         xyz   = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
 
-        plot_cloud(xyz, labels)
+        # plot_cloud(xyz, labels)
 
         tree_xyz    = xyz[labels == seg.tree_label]
         tree_labels = seg.segment(xyz, labels)
-        plot_cloud(tree_xyz, tree_labels)
+        # plot_cloud(tree_xyz, treeqqq_labels)
 
         for tree in np.unique(tree_labels):
             mask = tree_labels == tree

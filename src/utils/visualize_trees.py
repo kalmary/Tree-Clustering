@@ -115,7 +115,7 @@ def cloud2sideViews_torch(points: torch.Tensor, resolution_xy: int, margin_ratio
 # PDF generator
 # ──────────────────────────────────────────────────────────────────────────────
 
-VIEW_TITLES = ["TOP", "FRONT", "BACK", "Left (YZ)", "Right (YZ)"]
+VIEW_TITLES = ["TOP", "FRONT", "BACK", "Left", "Right"]
 CMAP        = "viridis"
 
 
