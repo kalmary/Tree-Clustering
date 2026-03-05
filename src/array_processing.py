@@ -18,6 +18,7 @@ from utils.instance_segmentation_evaluation import evaluate_segmentation
 from tqdm import tqdm
 
 from final_files.EdgeGNN import EdgeClassifierGNN
+
 from utils import load_json, load_model
 
 
