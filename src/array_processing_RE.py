@@ -8,6 +8,7 @@ import struct
 import numpy as np
 from scipy.spatial import Delaunay
 from scipy.spatial import cKDTree
+import yaml
 
 
 
@@ -347,6 +348,17 @@ class TreeSegmRay:
                     ground_pts.append(lowest)
 
         return np.array(ground_pts, dtype=np.float32)
+
+
+    def load_from_config(self, config: dict):
+        for key, value in config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+            else:
+                raise ValueError(f"Unknown config parameter: {key}")
+            
+        return self
+
 
     def segment(self, xyz: np.ndarray, labels: np.ndarray = None) -> np.ndarray:
         if labels is not None and self.tree_label is not None and self.ground_label is not None:
