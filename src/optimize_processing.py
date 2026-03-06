@@ -49,7 +49,12 @@ def evaluate_thresholds(
         xyz = cloud[:, :3]
         gt_labels = cloud[:, -1].astype(np.int32)
 
-        pred_labels = segmenter.segment(xyz)
+        try:
+            pred_labels = segmenter.segment(xyz)
+        except Exception as e:
+            logger.warning(f"Failed to segment {file_path.name}: {e}")
+            return {}
+        
         metrics = evaluate_segmentation(pred_labels, gt_labels)
         all_metrics.append(metrics)
 
@@ -91,6 +96,10 @@ def objective(
         
     )
 
+    if len(metrics)==0:
+        raise optuna.exceptions.TrialPruned()
+
+
     seq_q = metrics['seg_quality']
     logger.info(f"Trial {trial.number} → seg_quality={seq_q:.4f} | metrics: {metrics}")
     
@@ -131,13 +140,19 @@ def optimize_thresholds(
     assert len(data_files) > 0, f"No .npy files found in {data_dir}"
     logger.info(f"Found {len(data_files)} .npy files in {data_dir}")
 
+    n_startup = 5
+    n_warmup_steps = 40
+    interval_steps = 10
+
     study = optuna.create_study(
         study_name=study_name,
         storage=storage,
         direction="maximize",
         load_if_exists=True,         # allows resuming a previous run
         sampler=optuna.samplers.TPESampler(seed=42),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=4, n_warmup_steps=0),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials = n_startup,
+                                           n_warmup_steps=n_warmup_steps,
+                                           interval_steps=interval_steps),
     )
 
     study.optimize(
@@ -171,5 +186,5 @@ def optimize_thresholds(
 if __name__ == "__main__":
     result = optimize_thresholds(
         data_dir="data/split/test",
-        n_trials=50
+        n_trials=100
     )
