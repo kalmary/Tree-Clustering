@@ -13,85 +13,58 @@ from utils.visualize_trees import save_tree_projections_pdf
 from array_processing_RE import TreeSegmRay
 
 
-def create_species_workbook(species_dict: dict) -> openpyxl.Workbook:
+
+
+
+def _header_cell(cell, text: str):
+    cell.value     = text
+    cell.font      = Font(name="Arial", bold=True, color="FFFFFF")
+    cell.fill      = PatternFill("solid", start_color="2E7D32")
+    cell.alignment = Alignment(horizontal="center")
+
+
+def create_workbook(species_dict: dict) -> openpyxl.Workbook:
     wb = openpyxl.Workbook()
 
-    header_font  = Font(name="Arial", bold=True, color="FFFFFF")
-    header_fill  = PatternFill("solid", start_color="2E7D32")
-    center       = Alignment(horizontal="center")
-    normal_font  = Font(name="Arial")
-
     # ── Sheet 1: Tree Labels ──────────────────────────────────────────────────
-    ws_data = wb.active
-    ws_data.title = "Tree Labels"
+    ws_labels = wb.active
+    ws_labels.title = "Tree Labels"
 
-    for col, h in enumerate(["File Name", "Tree Label"], 1):
-        cell = ws_data.cell(row=1, column=col, value=h)
-        cell.font      = header_font
-        cell.fill      = header_fill
-        cell.alignment = center
+    _header_cell(ws_labels.cell(row=1, column=1), "File Name")
+    _header_cell(ws_labels.cell(row=1, column=2), "Tree Label")
 
-    ws_data.column_dimensions["A"].width = 30
-    ws_data.column_dimensions["B"].width = 14
-    ws_data.freeze_panes = "A2"   # keep header row visible while scrolling
+    ws_labels.freeze_panes = "A2"
+    ws_labels.column_dimensions["A"].width = 30
+    ws_labels.column_dimensions["B"].width = 14
 
-    # ── Sheet 2: Species Reference ───────────────────────────────────────────
-    ws_ref = wb.create_sheet(title="Species Reference")
+    # ── Sheet 2: Species ─────────────────────────────────────────────────────
+    ws_species = wb.create_sheet("Available labels lookup")
 
     for col, h in enumerate(["Species Code", "Species (Latin)", "Species (Polish)"], 1):
-        cell = ws_ref.cell(row=1, column=col, value=h)
-        cell.font      = header_font
-        cell.fill      = header_fill
-        cell.alignment = center
+        _header_cell(ws_species.cell(row=1, column=col), h)
 
     for row_idx, (code, names) in enumerate(species_dict.items(), 2):
-        ws_ref.cell(row=row_idx, column=1, value=code).font   = normal_font
-        ws_ref.cell(row=row_idx, column=2, value=names[0]).font = normal_font
-        ws_ref.cell(row=row_idx, column=3, value=names[1]).font = normal_font
+        ws_species.cell(row=row_idx, column=1, value=code).font   = Font(name="Arial")
+        ws_species.cell(row=row_idx, column=2, value=names[0]).font = Font(name="Arial")
+        ws_species.cell(row=row_idx, column=3, value=names[1]).font = Font(name="Arial")
 
-    ws_ref.column_dimensions["A"].width = 14
-    ws_ref.column_dimensions["B"].width = 28
-    ws_ref.column_dimensions["C"].width = 28
-    ws_ref.freeze_panes = "A2"
+    ws_species.freeze_panes = "A2"
+    ws_species.column_dimensions["A"].width = 14
+    ws_species.column_dimensions["B"].width = 28
+    ws_species.column_dimensions["C"].width = 28
 
     return wb
 
 
 def append_tree_rows(ws, las_idx: int, tree_labels: np.ndarray, data_row_start: int) -> int:
-    unique_labels = sorted(set(tree_labels[tree_labels != -1].tolist()))
-    for tree_id in unique_labels:
-        npy_name = f"{las_idx}_{tree_id}.npy"
-        ws.cell(row=data_row_start, column=1, value=npy_name).font = Font(name="Arial")
+    for tree_id in sorted(set(tree_labels[tree_labels != -1].tolist())):
+        ws.cell(row=data_row_start, column=1, value=f"{las_idx}_{tree_id}.npy").font = Font(name="Arial")
         # column 2 (Tree Label) intentionally left empty for manual annotation
         data_row_start += 1
     return data_row_start
 
 
 def main(species_dict: dict = None):
-
-    species = {
-        0:  ["Betula_pendula",         "Brzoza brodawkowata"],
-        1:  ["Fagus_sylvatica",        "Buk zwyczajny"],
-        2:  ["Quercus_petraea",        "Dąb bezszypułkowy"],
-        3:  ["Quercus_rubra",          "Dąb czerwony"],
-        4:  ["Quercus_robur",          "Dąb szypułkowy"],
-        5:  ["Carpinus_betulus",       "Grab pospolity"],
-        6:  ["Fraxinus_excelsior",     "Jesion wyniosły"],
-        7:  ["Acer_pseudoplatanus",    "Klon jawor"],
-        8:  ["Acer_campestre",         "Klon polny"],
-        9:  ["Tilia_cordata",          "Lipa drobnolistna"],
-        10: ["Ulmus_laevis",           "Wiąz szypułkowy"],
-        11: ["Crataegus_monogyna",     "Głóg jednoszyjkowy"],
-        12: ["Corylus_avellana",       "Leszczyna pospolita"],
-        13: ["Pseudotsuga_menziesii",  "Daglezja zielona"],
-        14: ["Abies_alba",             "Jodła pospolita"],
-        15: ["Larix_decidua",          "Modrzew europejski"],
-        16: ["Pinus_sylvestris",       "Sosna zwyczajna"],
-        17: ["Picea_abies",            "Świerk pospolity"],
-        18: ["Other",                  "Inne"],
-        19: ["Incorrect segmentation", "Błędna segmentacja"],
-    }
-
     semantic_labelled_dir = pth.Path("data/split/")
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
@@ -127,36 +100,36 @@ def main(species_dict: dict = None):
             )
 
             if species_dict is not None:
-                wb = create_species_workbook(species_dict)
+                wb = create_workbook(species_dict)
                 append_tree_rows(wb["Tree Labels"], las_idx, tree_labels, data_row_start=2)
-                excel_path = dataset_dir / f"{path.stem}.xlsx"
-                wb.save(excel_path)
+                wb.save(dataset_dir / f"{path.stem}.xlsx")
 
         finally:
             seg.rm_container()
 
 
 if __name__ == "__main__":
-    main(species_dict = {
-        0:  ["Betula_pendula",         "Brzoza brodawkowata"],
-        1:  ["Fagus_sylvatica",        "Buk zwyczajny"],
-        2:  ["Quercus_petraea",        "Dąb bezszypułkowy"],
-        3:  ["Quercus_rubra",          "Dąb czerwony"],
-        4:  ["Quercus_robur",          "Dąb szypułkowy"],
-        5:  ["Carpinus_betulus",       "Grab pospolity"],
-        6:  ["Fraxinus_excelsior",     "Jesion wyniosły"],
-        7:  ["Acer_pseudoplatanus",    "Klon jawor"],
-        8:  ["Acer_campestre",         "Klon polny"],
-        9:  ["Tilia_cordata",          "Lipa drobnolistna"],
-        10: ["Ulmus_laevis",           "Wiąz szypułkowy"],
-        11: ["Crataegus_monogyna",     "Głóg jednoszyjkowy"],
-        12: ["Corylus_avellana",       "Leszczyna pospolita"],
-        13: ["Pseudotsuga_menziesii",  "Daglezja zielona"],
-        14: ["Abies_alba",             "Jodła pospolita"],
-        15: ["Larix_decidua",          "Modrzew europejski"],
-        16: ["Pinus_sylvestris",       "Sosna zwyczajna"],
-        17: ["Picea_abies",            "Świerk pospolity"],
-        18: ["Other",                  "Inne"],
-        19: ["Incorrect segmentation", "Błędna segmentacja"],
+    SPECIES = {
+            0:  ["Betula_pendula",         "Brzoza brodawkowata"],
+            1:  ["Fagus_sylvatica",        "Buk zwyczajny"],
+            2:  ["Quercus_petraea",        "Dąb bezszypułkowy"],
+            3:  ["Quercus_rubra",          "Dąb czerwony"],
+            4:  ["Quercus_robur",          "Dąb szypułkowy"],
+            5:  ["Carpinus_betulus",       "Grab pospolity"],
+            6:  ["Fraxinus_excelsior",     "Jesion wyniosły"],
+            7:  ["Acer_pseudoplatanus",    "Klon jawor"],
+            8:  ["Acer_campestre",         "Klon polny"],
+            9:  ["Tilia_cordata",          "Lipa drobnolistna"],
+            10: ["Ulmus_laevis",           "Wiąz szypułkowy"],
+            11: ["Crataegus_monogyna",     "Głóg jednoszyjkowy"],
+            12: ["Corylus_avellana",       "Leszczyna pospolita"],
+            13: ["Pseudotsuga_menziesii",  "Daglezja zielona"],
+            14: ["Abies_alba",             "Jodła pospolita"],
+            15: ["Larix_decidua",          "Modrzew europejski"],
+            16: ["Pinus_sylvestris",       "Sosna zwyczajna"],
+            17: ["Picea_abies",            "Świerk pospolity"],
+            18: ["Other",                  "Inne"],
+            19: ["Incorrect segmentation", "Błędna segmentacja"],
     }
-)
+
+    main(species_dict=SPECIES)
