@@ -11,7 +11,7 @@
 
 
 --- 
-# 1. O# Overview <a name="overview"></a>
+# 1. Overview <a name="overview"></a>
 
 This repository provides a pipeline for **instance segmentation of individual trees** from LiDAR point cloud data (`.laz` files). It covers the full workflow from raw data preprocessing to tree segmentation and parameter optimization.
 
