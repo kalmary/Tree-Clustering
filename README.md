@@ -11,7 +11,11 @@
 
 
 --- 
-# 1. Overview <a name="overview"></a>
+# 1. O# Overview <a name="overview"></a>
+
+This repository provides a pipeline for **instance segmentation of individual trees** from LiDAR point cloud data (`.laz` files). It covers the full workflow from raw data preprocessing to tree segmentation and parameter optimization.
+
+The pipeline is built around the [raycloudtools](https://github.com/csiro-robotics/raycloudtools) `rayextract trees` algorithm, wrapped in a Python class that runs either natively or inside Docker. Segmentation parameters can be tuned automatically using Optuna to maximize segmentation quality on a labeled dataset.
 
 # 2. Repository structure: <a name="fstructure"></a>
 
