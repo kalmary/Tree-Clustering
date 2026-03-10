@@ -117,7 +117,7 @@ def cloud2sideViews_torch(points: torch.Tensor, resolution_xy: int, margin_ratio
 # PDF generator
 # ──────────────────────────────────────────────────────────────────────────────
 
-VIEW_TITLES = ["TOP", "FRONT", "BACK", "Left", "Right"]
+VIEW_TITLES = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
 CMAP        = "viridis"
 
 
@@ -133,8 +133,9 @@ def save_tree_projections_pdf(
     max_points_per_tree: int          = 100000,
     dpi:                 int          = 150,
     device:              str          = torch.device("cpu"),
+    tree_classifier:     Optional[classmethod]     = None,
 ) -> None:
-    
+
     output_path = output_dir / output_name
     output_path = pathlib.Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +177,12 @@ def save_tree_projections_pdf(
             wy     = float(tree_pts[:, 1].max() - tree_pts[:, 1].min())
             z_base = float(tree_pts[:, 2].min())
 
+            # ── classifier prediction ─────────────────────────────────────────
+            if tree_classifier is not None:
+                predicted_species = str(tree_classifier.predict(tree_pts))
+            else:
+                predicted_species = None
+
             t_pts = torch.from_numpy(tree_pts).to(device)
             with torch.no_grad():
                 views = cloud2sideViews_torch(t_pts, resolution, margin_ratio)
@@ -213,16 +220,19 @@ def save_tree_projections_pdf(
             ax_s = fig.add_subplot(gs[1, 2])
             ax_s.axis("off")
             stat_rows = [
-                ("Tree ID",       f"{str(tree_id)}"),
+                ("Tree ID",        f"{str(tree_id)}"),
                 ("Tree file name", tree_name.name),
-                ("Points (raw)",  f"{n_raw:,}"),
-                ("Points (used)", f"{len(tree_pts):,}"),
-                ("Height",        f"{h:.2f} m"),
-                ("Width X",       f"{wx:.2f} m"),
-                ("Width Y",       f"{wy:.2f} m"),
-                ("Z base",        f"{z_base:.2f} m"),
-                ("Resolution",    f"{resolution} x {resolution} px")
+                ("Points (raw)",   f"{n_raw:,}"),
+                ("Points (used)",  f"{len(tree_pts):,}"),
+                ("Height",         f"{h:.2f} m"),
+                ("Width X",        f"{wx:.2f} m"),
+                ("Width Y",        f"{wy:.2f} m"),
+                ("Z base",         f"{z_base:.2f} m"),
+                ("Resolution",     f"{resolution} x {resolution} px"),
             ]
+            if predicted_species is not None:
+                stat_rows.append(("Predicted species", predicted_species))
+
             ax_s.text(0.08, 0.94, "Statistics", transform=ax_s.transAxes,
                       fontsize=10, fontweight="bold", va="top")
             y_cur = 0.82
@@ -232,14 +242,6 @@ def save_tree_projections_pdf(
                 ax_s.text(0.58, y_cur, val_txt, transform=ax_s.transAxes,
                           fontsize=8, fontweight="bold", va="top")
                 y_cur -= 0.088
-
-            # colorbar
-            # cbar_ax = fig.add_axes([0.962, 0.04, 0.012, 0.84])
-            # sm = plt.cm.ScalarMappable(cmap=CMAP, norm=plt.Normalize(0, 1))
-            # sm.set_array([])
-            # cb = fig.colorbar(sm, cax=cbar_ax)
-            # cb.set_label("Normalised depth", fontsize=7, color="#444444")
-            # cb.ax.tick_params(labelsize=6, colors="#444444")
 
             pdf.savefig(fig, dpi=dpi, facecolor="white")
             plt.close(fig)
@@ -257,7 +259,7 @@ def save_tree_projections_pdf(
 def main():
     import laspy
     import pathlib as pth
-    
+
     sys.path.append(str(pathlib.Path(__file__).parent.parent))
     from array_processing_RE import TreeSegmRay
 
@@ -286,9 +288,9 @@ def main():
             las_idx     = 0,
             source_name = pathlib.Path(path).name,
             output_dir  = path.parent,
-            output_path = "output.pdf",
+            output_name = "output.pdf",
             resolution  = 350,
-            device      = device
+            device      = device,
         )
     finally:
         seg.rm_container()

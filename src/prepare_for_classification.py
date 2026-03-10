@@ -5,15 +5,10 @@ import torch
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
-import sys
-src_path = pth.Path(__file__).parent.parent
-sys.path.append(str(src_path))
-
 from utils.visualize_trees import save_tree_projections_pdf
 from array_processing_RE import TreeSegmRay
 
-
-
+from Tree_Classification.src.TreeClassifier import TreeClassifier
 
 
 def _header_cell(cell, text: str):
@@ -65,7 +60,7 @@ def append_tree_rows(ws, las_idx: int, tree_labels: np.ndarray, data_row_start: 
 
 
 def main(species_dict: dict = None):
-    semantic_labelled_dir = pth.Path("data/split/")
+    semantic_labelled_dir = pth.Path("/mnt/DATA_SSD/BRIK/GRAJEWO/RAW/MOD")
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -74,6 +69,10 @@ def main(species_dict: dict = None):
         gravity_factor=0.6, use_rays=False, ground_label=1,
         tree_label=7, verbose=False,
     )
+
+    config_dir = pth.Path(__file__).parent.joinpath("Tree_Classification/src/final_files")
+    tree_class_model = TreeClassifier(model_name="ResNetTreeV0_61", config_dir=config_dir, device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
+
     seg.start_container()
 
     for las_idx, path in enumerate(laz_paths):
@@ -97,6 +96,7 @@ def main(species_dict: dict = None):
                 output_dir=dataset_dir,
                 resolution=350,
                 device=device,
+                tree_classifier=tree_class_model,
             )
 
             if species_dict is not None:
