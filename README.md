@@ -27,8 +27,8 @@ The pipeline is built around the [raycloudtools](https://github.com/csiro-roboti
 │   ├── instance_segmentation_eval.py       #Segmentation evaluation function
 │   ├── plot_cloud.py                       #3D point cloud visualization
 │   └── visualize_trees.py                  #Renders 5 depth-map views per tree to a PDF report
-├── array_processing_RE.py
-└── optimize_processing.py
+├── array_processing_RE.py                  #Script for tree instance segmentation using the raycloudtools rayextract trees algorithm
+└── optimize_processing.py                  #Optuna-based parameter search for TreeSegmRay segmentation parameters
 
 ```
 ---
