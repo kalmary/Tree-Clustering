@@ -8,8 +8,9 @@ import struct
 import numpy as np
 from scipy.spatial import Delaunay
 from scipy.spatial import cKDTree
-import yaml
+from tqdm import tqdm
 
+from utils.plot_cloud import plot_cloud
 
 
 class TreeSegmRay:
@@ -49,27 +50,14 @@ class TreeSegmRay:
         self._shared_tmpdir  = None
         self._backend        = self._detect_backend()
 
-        if self.verbose:
-            print(f"[TreeSegmRay] Backend: {self._backend}")
-
     # ------------------------------------------------------------------
     # Container management
     # ------------------------------------------------------------------
 
     def start_container(self):
-        """
-        Start a persistent Docker container so segment() calls reuse it
-        instead of spinning up a new container each time (~1-2s saved per call).
-        Call rm_container() when you are done.
-        No-op if backend is native or container is already running.
-        """
         if self._backend != "docker":
-            if self.verbose:
-                print("[TreeSegmRay] start_container() ignored — using native backend.")
             return
         if self._container_name is not None:
-            if self.verbose:
-                print(f"[TreeSegmRay] Container '{self._container_name}' already running.")
             return
 
         self._shared_tmpdir  = tempfile.mkdtemp(prefix="treesegmray_persistent_", dir=os.path.expanduser("~"))
@@ -80,21 +68,12 @@ class TreeSegmRay:
             "-v",     f"{self._shared_tmpdir}:/data",
             "ghcr.io/csiro-robotics/raycloudtools:latest",
             "sleep", "infinity",
-        ], check=True, capture_output=not self.verbose)
-
-        if self.verbose:
-            print(f"[TreeSegmRay] Container '{self._container_name}' started.")
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def rm_container(self):
-        """
-        Stop and remove the persistent Docker container and its temp directory.
-        Safe to call even if no container is running.
-        """
         if self._container_name:
             subprocess.run(["docker", "rm", "-f", self._container_name],
-                           capture_output=True)
-            if self.verbose:
-                print(f"[TreeSegmRay] Container '{self._container_name}' removed.")
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self._container_name = None
 
         if self._shared_tmpdir:
@@ -110,7 +89,6 @@ class TreeSegmRay:
         if shutil.which("rayextract"):
             return "native"
         if shutil.which("docker"):
-            # start daemon if not running
             if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
                 subprocess.run(["sudo", "systemctl", "start", "docker"], check=True)
                 subprocess.run(["docker", "info"], check=True)
@@ -131,36 +109,36 @@ class TreeSegmRay:
 
     def _run(self, cmd: list, workdir: str):
         if self._backend == "docker":
-            def to_container(arg):
-                if os.path.isabs(arg):
-                    return "/data/" + os.path.basename(arg)
-                return arg
-
             if self._container_name:
+                def to_container(arg):
+                    if os.path.isabs(arg):
+                        rel = os.path.relpath(arg, self._shared_tmpdir)
+                        return "/data/" + rel
+                    return arg
                 cmd = ["docker", "exec", self._container_name] + \
-                      [to_container(a) for a in cmd]
+                    [to_container(a) for a in cmd]
             else:
+                def to_container(arg):
+                    if os.path.isabs(arg):
+                        return "/data/" + os.path.basename(arg)
+                    return arg
                 cmd = [
                     "docker", "run", "--rm",
                     "-v", f"{workdir}:/data",
                     "ghcr.io/csiro-robotics/raycloudtools:latest",
                 ] + [to_container(a) for a in cmd]
 
-        if self.verbose:
-            print(f"[TreeSegmRay] $ {' '.join(cmd)}")
-
         result = subprocess.run(
-            cmd, capture_output=not self.verbose,
-            text=True, cwd=workdir,
+            cmd, capture_output=True, text=True, cwd=workdir,
         )
         if result.returncode != 0:
             raise RuntimeError(
                 f"rayextract failed (exit {result.returncode}):\n"
-                f"{result.stderr or '(no stderr)'}"
+                f"{result.stdout or ''}{result.stderr or '(no output)'}"
             )
 
     # ------------------------------------------------------------------
-    # Internal PLY helpers — purely a transport format for rayextract
+    # PLY helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -190,13 +168,11 @@ class TreeSegmRay:
 
     @staticmethod
     def _write_ground_mesh_ply(ground_xyz: np.ndarray, path: str):
-        """Write a binary PLY mesh — rayextract only accepts binary format."""
         tri   = Delaunay(ground_xyz[:, :2])
         verts = ground_xyz.astype(np.float32)
         faces = tri.simplices.astype(np.int32)
 
         with open(path, "wb") as f:
-            # header (ASCII)
             f.write((
                 "ply\nformat binary_little_endian 1.0\n"
                 "comment generated by TreeSegmRay\n"
@@ -206,9 +182,7 @@ class TreeSegmRay:
                 "property list uchar int vertex_indices\n"
                 "end_header\n"
             ).encode("ascii"))
-            # vertices — 3 × float32 each
             f.write(verts.tobytes())
-            # faces — uchar count (always 3) + 3 × int32
             for face in faces:
                 f.write(struct.pack("<B3i", 3, face[0], face[1], face[2]))
 
@@ -248,15 +222,15 @@ class TreeSegmRay:
         _, labels = np.unique(packed, return_inverse=True)
         return labels.astype(np.int64)
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     def _connect_floating_clusters(self, tree_labels: np.ndarray, tree_xyz: np.ndarray,
-                                ground_xyz: np.ndarray,
-                                ground_z_threshold: float = 0.5,
-                                min_cluster_size: int = 5000,
-                                max_tilt_deg: float = 30.0) -> np.ndarray:
-        """
-        max_tilt_deg: maximum tilt angle from vertical (degrees) to still
-                    consider a grounded cluster as belonging below a floating one.
-        """
+                                    ground_xyz: np.ndarray,
+                                    ground_z_threshold: float = 0.5,
+                                    min_cluster_size: int = 5000,
+                                    max_tilt_deg: float = 30.0) -> np.ndarray:
         ground_z_max  = ground_xyz[:, 2].max()
         unique_labels = np.unique(tree_labels)
 
@@ -284,7 +258,7 @@ class TreeSegmRay:
             tree_xyz[tree_labels == lbl].mean(axis=0) for lbl in floating
         ], dtype=np.float32)
 
-        tilt_tolerance = np.tan(np.deg2rad(max_tilt_deg))  # XY per unit Z
+        tilt_tolerance = np.tan(np.deg2rad(max_tilt_deg))
         result  = tree_labels.copy()
         kdtree  = cKDTree(grounded_centroids)
 
@@ -295,12 +269,10 @@ class TreeSegmRay:
             if below_mask.any():
                 candidates    = grounded_centroids[below_mask]
                 candidate_ids = grounded[below_mask]
-
-                dz          = fc[2] - candidates[:, 2]
-                dxy         = np.linalg.norm(fc[:2] - candidates[:, :2], axis=1)
-                tilt_score  = dxy - tilt_tolerance * dz
-                best        = np.argmin(tilt_score)
-                target      = candidate_ids[best]
+                dz            = fc[2] - candidates[:, 2]
+                dxy           = np.linalg.norm(fc[:2] - candidates[:, :2], axis=1)
+                tilt_score    = dxy - tilt_tolerance * dz
+                target        = candidate_ids[np.argmin(tilt_score)]
             else:
                 _, nn  = kdtree.query(fc, k=1)
                 target = grounded[nn]
@@ -308,31 +280,24 @@ class TreeSegmRay:
             result[result == lbl] = target
 
         return result
-    
+
     def _reduce_labels(self, labels: np.ndarray) -> np.ndarray:
-        _, labels[labels!=-1] = np.unique(labels[labels!=-1], return_inverse=True) # move from 0 to -1
-        labels[labels!=-1] -= 1
-        
+        _, labels[labels != -1] = np.unique(labels[labels != -1], return_inverse=True)
+        labels[labels != -1] -= 1
         return labels
-    
+
     def _remove_small_clusters(self, tree_labels: np.ndarray,
                                 min_points: int = 100) -> np.ndarray:
         result = tree_labels.copy()
         for lbl in np.unique(tree_labels):
-            mask = tree_labels == lbl
-            if mask.sum() < min_points:
-                result[mask] = -1
+            if (tree_labels == lbl).sum() < min_points:
+                result[tree_labels == lbl] = -1
         return result
 
     @staticmethod
     def _estimate_ground(tree_xyz: np.ndarray, grid_size: float = 2.0) -> np.ndarray:
-        """
-        Estimate ground surface from lowest points in a 2D grid.
-        Used when no ground labels are available.
-        """
         xs = tree_xyz[:, 0]
         ys = tree_xyz[:, 1]
-
         x_bins = np.arange(xs.min(), xs.max() + grid_size, grid_size)
         y_bins = np.arange(ys.min(), ys.max() + grid_size, grid_size)
 
@@ -344,23 +309,134 @@ class TreeSegmRay:
                     (ys >= y_bins[yi]) & (ys < y_bins[yi + 1])
                 )
                 if mask.sum() > 0:
-                    lowest = tree_xyz[mask][tree_xyz[mask, 2].argmin()]
-                    ground_pts.append(lowest)
-
+                    ground_pts.append(tree_xyz[mask][tree_xyz[mask, 2].argmin()])
         return np.array(ground_pts, dtype=np.float32)
 
+    # ------------------------------------------------------------------
+    # Tile helpers
+    # ------------------------------------------------------------------
 
-    def load_from_config(self, config: dict):
-        for key, value in config.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
+    @staticmethod
+    def _voxel_tiles(xyz: np.ndarray, voxel_size: float = 50.0, overlap: float = 3.0):
+        xs, ys = xyz[:, 0], xyz[:, 1]
+        x_min, x_max = float(xs.min()), float(xs.max())
+        y_min, y_max = float(ys.min()), float(ys.max())
+        for xs0 in np.arange(x_min, x_max, voxel_size):
+            for ys0 in np.arange(y_min, y_max, voxel_size):
+                yield {
+                    "cx_min": xs0,           "cx_max": xs0 + voxel_size,
+                    "cy_min": ys0,           "cy_max": ys0 + voxel_size,
+                    "x_min":  xs0 - overlap, "x_max":  xs0 + voxel_size + overlap,
+                    "y_min":  ys0 - overlap, "y_max":  ys0 + voxel_size + overlap,
+                }
+
+    @staticmethod
+    def _core_mask(xyz: np.ndarray, tile: dict) -> np.ndarray:
+        return (
+            (xyz[:, 0] >= tile["cx_min"]) & (xyz[:, 0] < tile["cx_max"]) &
+            (xyz[:, 1] >= tile["cy_min"]) & (xyz[:, 1] < tile["cy_max"])
+        )
+
+    @staticmethod
+    def _tile_mask(xyz: np.ndarray, tile: dict) -> np.ndarray:
+        return (
+            (xyz[:, 0] >= tile["x_min"]) & (xyz[:, 0] < tile["x_max"]) &
+            (xyz[:, 1] >= tile["y_min"]) & (xyz[:, 1] < tile["y_max"])
+        )
+
+    # ------------------------------------------------------------------
+    # Trunk helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _estimate_trunk_position(
+            tree_xyz: np.ndarray,
+            trunk_height_band: tuple[float, float] = (0.5, 2.0)) -> np.ndarray | None:
+        z_min = tree_xyz[:, 2].min()
+        band  = tree_xyz[
+            (tree_xyz[:, 2] >= z_min + trunk_height_band[0]) &
+            (tree_xyz[:, 2] <= z_min + trunk_height_band[1])
+        ]
+        if len(band) == 0:
+            return None
+        return band[:, :2].mean(axis=0)
+
+    def _merge_close_trunks(
+            self,
+            tree_xyz: np.ndarray,
+            tree_ids: np.ndarray,
+            min_trunk_dist: float = 1.5,
+            trunk_height_band: tuple[float, float] = (0.5, 2.0),
+            min_points: int = 50) -> np.ndarray:
+
+        unique_ids = np.unique(tree_ids)
+        if len(unique_ids) < 2:
+            return tree_ids.copy()
+
+        trunk_xy    = {}
+        point_count = {}
+
+        for tid in tqdm(unique_ids, desc="Merging trunks", unit="tree",
+                        leave=False, position=1):
+            mask  = tree_ids == tid
+            count = int(mask.sum())
+            point_count[tid] = count
+            trunk_xy[tid] = (
+                self._estimate_trunk_position(tree_xyz[mask], trunk_height_band)
+                if count >= min_points else None
+            )
+
+        valid_ids = [tid for tid in unique_ids if trunk_xy[tid] is not None]
+        if len(valid_ids) < 2:
+            return tree_ids.copy()
+
+        positions = np.array([trunk_xy[tid] for tid in valid_ids], dtype=np.float32)
+        pairs     = cKDTree(positions).query_pairs(r=min_trunk_dist, output_type="ndarray")
+
+        if len(pairs) == 0:
+            return tree_ids.copy()
+
+        parent = list(range(len(valid_ids)))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if point_count[valid_ids[ra]] >= point_count[valid_ids[rb]]:
+                parent[rb] = ra
             else:
-                raise ValueError(f"Unknown config parameter: {key}")
-            
-        return self
+                parent[ra] = rb
 
+        for i, j in pairs:
+            union(int(i), int(j))
 
-    def segment(self, xyz: np.ndarray, labels: np.ndarray = None) -> np.ndarray:
+        remap = {tid: valid_ids[find(idx)] for idx, tid in enumerate(valid_ids)}
+        for tid in unique_ids:
+            remap.setdefault(tid, tid)
+
+        new_ids = tree_ids.copy()
+        for old_id, new_id in remap.items():
+            if old_id != new_id:
+                new_ids[tree_ids == old_id] = new_id
+
+        _, new_ids = np.unique(new_ids, return_inverse=True)
+        return new_ids.astype(np.int64)
+
+    # ------------------------------------------------------------------
+    # Segmentation
+    # ------------------------------------------------------------------
+
+    def _segment_small(self,
+                       xyz: np.ndarray,
+                       labels: np.ndarray = None,
+                       debug: bool = False) -> np.ndarray:
+
         if labels is not None and self.tree_label is not None and self.ground_label is not None:
             tree_mask   = labels == self.tree_label
             ground_mask = labels == self.ground_label
@@ -371,23 +447,27 @@ class TreeSegmRay:
             ground_xyz = None
             tree_mask  = np.ones(len(xyz), dtype=bool)
 
-        if self.verbose:
+        if debug:
             if ground_xyz is not None:
-                print(f"[TreeSegmRay] Trees: {len(tree_xyz):,} pts  Ground: {len(ground_xyz):,} pts")
+                tqdm.write(f"[debug] Trees: {len(tree_xyz):,} pts  Ground: {len(ground_xyz):,} pts")
             else:
-                print(f"[TreeSegmRay] Trees: {len(tree_xyz):,} pts  Ground: estimated from lowest points")
+                tqdm.write(f"[debug] Trees: {len(tree_xyz):,} pts  Ground: estimated from lowest points")
 
-        xy_mean           = tree_xyz[:, :2].mean(axis=0)
-        tree_xyz[:, :2]  -= xy_mean
+        xy_mean          = tree_xyz[:, :2].mean(axis=0)
+        tree_xyz[:, :2] -= xy_mean
 
         if ground_xyz is not None and len(ground_xyz) > 0:
             ground_xyz[:, :2] -= xy_mean
         else:
             ground_xyz = self._estimate_ground(tree_xyz)
 
+        # Each call gets its own subdirectory so concurrent tiles never
+        # overwrite each other's cloud.ply / ground.ply inside the container.
         own_tmpdir = self._shared_tmpdir is None
-        tmpdir     = tempfile.mkdtemp(prefix="treesegmray_", dir=os.path.expanduser("~")) if own_tmpdir \
-                    else self._shared_tmpdir
+        if own_tmpdir:
+            tmpdir = tempfile.mkdtemp(prefix="treesegmray_", dir=os.path.expanduser("~"))
+        else:
+            tmpdir = tempfile.mkdtemp(prefix="tile_", dir=self._shared_tmpdir)
 
         cloud_ply  = os.path.join(tmpdir, "cloud.ply")
         ground_ply = os.path.join(tmpdir, "ground.ply")
@@ -415,8 +495,6 @@ class TreeSegmRay:
                 cmd.append("--use_rays")
             if self.segment_branches:
                 cmd.append("--branch_segmentation")
-            if self.verbose:
-                cmd.append("--verbose")
 
             self._run(cmd, workdir=tmpdir)
 
@@ -431,16 +509,75 @@ class TreeSegmRay:
             tree_instance_labels = self._connect_floating_clusters(
                 tree_instance_labels, tree_xyz, ground_xyz,
                 ground_z_threshold=0.5,
-                min_cluster_size=500
+                min_cluster_size=500,
             )
             tree_instance_labels = self._remove_small_clusters(tree_instance_labels, min_points=1500)
             tree_instance_labels = self._reduce_labels(tree_instance_labels)
 
         finally:
-            if own_tmpdir:
-                shutil.rmtree(tmpdir, ignore_errors=True)
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
         return tree_instance_labels
+
+    def _segment_big(self, xyz: np.ndarray, labels: np.ndarray,
+                     voxel_size: float = 50.0, overlap: float = 5.0) -> np.ndarray:
+
+        if labels is not None and self.tree_label is not None and self.ground_label is not None:
+            tree_mask = labels == self.tree_label
+            tree_xyz  = xyz[tree_mask]
+        else:
+            tree_mask = np.ones(len(xyz), dtype=bool)
+            tree_xyz  = xyz
+
+        tree_ids      = np.full(len(tree_xyz), -1, dtype=np.int64)
+        treeID_offset = 0
+
+        tiles = list(self._voxel_tiles(tree_xyz, voxel_size=voxel_size, overlap=overlap))
+        for tile in tqdm(tiles, desc="Voxel tiles", leave=False, position=1):
+
+            ext_mask    = self._tile_mask(xyz, tile)
+            mini_xyz    = xyz[ext_mask]
+
+            if mini_xyz.shape[0] == 0:
+                continue
+
+
+            mini_labels  = labels[ext_mask] if labels is not None else None
+
+            if mini_xyz[mini_labels == self.tree_label].shape[0] < int(2*1e4):
+                continue
+
+            core_in_tree = self._core_mask(tree_xyz, tile)
+            if core_in_tree.sum() == 0:
+                continue
+
+            chunk_tree_ids = self._segment_small(mini_xyz, mini_labels)
+
+            if mini_labels is not None and self.tree_label is not None:
+                mini_tree_mask = mini_labels == self.tree_label
+            else:
+                mini_tree_mask = np.ones(len(mini_xyz), dtype=bool)
+
+            core_chunk_ids = chunk_tree_ids[self._core_mask(mini_xyz[mini_tree_mask], tile)].copy()
+
+            valid = core_chunk_ids >= 0
+            core_chunk_ids[valid] += treeID_offset
+            if valid.any():
+                treeID_offset = int(core_chunk_ids[valid].max()) + 1
+
+            tree_ids[core_in_tree] = core_chunk_ids
+
+        tree_ids = self._merge_close_trunks(tree_xyz, tree_ids,
+                                            min_trunk_dist=0.3,
+                                            trunk_height_band=(0.4, 1.0))
+        return tree_ids
+
+    def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        if xyz[labels == self.tree_label].shape[0] > 10 * 1e6:
+            return self._segment_big(xyz, labels)
+        else:
+            return self._segment_small(xyz, labels)
+
 
 # ---------------------------------------------------------------------------
 # Example
@@ -448,26 +585,23 @@ class TreeSegmRay:
 
 def main():
     import laspy
-    from utils.plot_cloud import plot_cloud
 
-    seg = TreeSegmRay(height_min=0.9, max_diameter=0.8, distance_limit=0.25, gravity_factor=0.6, use_rays=False, ground_label=1, tree_label=7, verbose = False)
+    seg = TreeSegmRay(height_min=0.6, max_diameter=0.6, distance_limit=0.25,
+                      gravity_factor=0.85, use_rays=False, ground_label=1,
+                      tree_label=7, verbose=False)
     seg.start_container()
 
     for path in ["data/split/ITWL_Grajewo19_cut_small.laz"]:
-        las = laspy.read(path)
-        xyz   = np.vstack([las.x, las.y, las.z]).T
+        las    = laspy.read(path)
+        xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
-
-        # plot_cloud(xyz, labels)
 
         tree_xyz    = xyz[labels == seg.tree_label]
         tree_labels = seg.segment(xyz, labels)
-        # plot_cloud(tree_xyz, treeqqq_labels)
 
         for tree in np.unique(tree_labels):
             mask = tree_labels == tree
             print(f"Tree {tree}: {mask.sum()} points")
-            plot_cloud(tree_xyz[mask], tree_labels[mask])
 
     seg.rm_container()
 
