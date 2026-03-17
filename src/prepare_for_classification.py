@@ -211,7 +211,7 @@ def main(species_dict: dict = None):
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    seg = TreeSegmRay(height_min=0.6, max_diameter=0.6, distance_limit=0.25, gravity_factor=0.85, use_rays=False, ground_label=1, tree_label=7, verbose = True)
+    seg = TreeSegmRay(height_min=2., max_diameter=0.9, distance_limit=0.25, gravity_factor=0.75, use_rays=False, ground_label=1, tree_label=7, verbose = True)
 
     config_dir = pth.Path(__file__).parent.joinpath("TreePCDClass/src/final_files")
     tree_class_model = TreeClassifier(
