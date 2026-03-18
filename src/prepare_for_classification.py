@@ -13,6 +13,8 @@ from TreePCDClass.src.TreeClassifier import TreeClassifier
 from tqdm import tqdm
 
 
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Label translation  (old model  →  new SPECIES dict)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -207,7 +209,7 @@ def append_tree_rows(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main(species_dict: dict = None):
-    semantic_labelled_dir = pth.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_STARE")
+    semantic_labelled_dir = pth.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT")
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -248,9 +250,18 @@ def main(species_dict: dict = None):
                 # print(f"[CLEANUP] Removed stale {stale.name}")
 
         try:
+            print(path)
             las = laspy.read(path)
-            pts = np.vstack([las.x, las.y, las.z]).T
+            pts = np.vstack([las.x, las.y, las.z]).T.astype(np.float64)
             cls = np.asarray(las.classification, dtype=np.int32)
+
+        except Exception as e:
+
+            print(f"Error processing {path}: {e}")
+            continue
+
+
+        try:
 
             tree_labels = seg.segment(pts, cls)
             tree_xyz    = pts[cls == seg.tree_label]

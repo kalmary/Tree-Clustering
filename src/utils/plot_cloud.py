@@ -36,3 +36,10 @@ def plot_cloud(points: np.ndarray, labels: Optional[np.ndarray] = None):
     
     plotter.close()
     plotter.deep_clean()
+
+def test():
+    cloud = np.load("/mnt/DATA_SSD/BRIK/SEMANTIC_SEGM/decimated/07-45_tile_004_003.npy")
+    plot_cloud(cloud[:, :3], cloud[: , -1])
+
+if __name__ == "__main__":
+    test()
