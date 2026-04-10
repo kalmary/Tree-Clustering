@@ -149,5 +149,5 @@ class LLM_Classifier:
     def api_call(self):
         system_prompt = ""
 
-        response = self.client.responses.create()
+        response = self.client.responses.create(model = self.mod)
 
