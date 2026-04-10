@@ -8,8 +8,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from utils.visualize_trees import save_tree_projections_pdf
 from array_processing_RE import TreeSegmRay
 
-from TreePCDClass.src.TreeClassifier import TreeClassifier
-
+from LLM_TreeClassifier import LLM_Classifier
 from tqdm import tqdm
 
 
@@ -25,27 +24,6 @@ from tqdm import tqdm
 # reserved exclusively for manual annotation by a specialist.
 #
 # Update this list if you retrain the old model with different species.
-OLD_MODEL_CLASSES: list[str] = [
-    "others",               # 0  ← explicitly assigned 0 during training
-    "Betula_pendula",       # 1
-    "Fagus_sylvatica",      # 2
-    "Quercus_petraea",      # 3
-    "Quercus_rubra",        # 4
-    "Quercus_robur",        # 5
-    "Carpinus_betulus",     # 6
-    "Fraxinus_excelsior",   # 7
-    "Acer_pseudoplatanus",  # 8
-    "Acer_campestre",       # 9
-    "Tilia_cordata",        # 10
-    "Ulmus_laevis",         # 11
-    "Crataegus_monogyna",   # 12
-    "Corylus_avellana",     # 13
-    "Pseudotsuga_menziesii",# 14
-    "Abies_alba",           # 15
-    "Larix_decidua",        # 16
-    "Pinus_sylvestris",     # 17
-    "Picea_abies",          # 18
-]
 
 
 def _build_translator(species_dict: dict) -> dict:
@@ -218,18 +196,7 @@ def main(species_dict: dict = None):
                       tree_label=7, verbose=True)
 
     config_dir = pth.Path(__file__).parent.joinpath("TreePCDClass/src/final_files")
-    tree_class_model = TreeClassifier(
-        model_name="ResNetTreeV0_61",
-        config_dir=config_dir,
-        device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
-    )
-
-    # Build label translator: old-model raw labels (int or str) → new SPECIES names.
-    # OLD_MODEL_CLASSES is hardcoded above — update it if the old model is retrained.
-    label_translator = _build_translator(species_dict) if species_dict is not None else {}
-    # if label_translator:
-    #     print(f"[LABELS] Translator ready ({len(OLD_MODEL_CLASSES)} old-model classes, "
-    #           f"'others' at index 0 → 'Other'.")
+    tree_class_model = LLM_Classifier(resolution=350, species=species_dict)
 
     seg.start_container()
 
@@ -288,10 +255,6 @@ def main(species_dict: dict = None):
             # Remap old-model class labels to new SPECIES dict names.
             # "Incorrect segmentation" (key 19) is never emitted by the old model
             # and is left blank — the specialist decides which trees get it.
-            predictions = (
-                translate_predictions(raw_predictions, label_translator)
-                if label_translator else raw_predictions
-            )
 
             if species_dict is not None:
                 wb, next_row = _load_or_create_workbook(xlsx_path, species_dict)
@@ -299,7 +262,7 @@ def main(species_dict: dict = None):
                     wb["Tree Labels"],
                     las_idx=las_idx,
                     tree_labels=valid_lbls,
-                    predictions=predictions,
+                    predictions=raw_predictions,
                     data_row_start=next_row,
                 )
                 wb.save(xlsx_path)
