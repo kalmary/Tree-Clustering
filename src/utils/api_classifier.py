@@ -4,9 +4,13 @@ import torch
 from torchvision import transforms
 import base64
 from io import BytesIO
-from openai import OpenAi
+from openai import OpenAI
+import numpy as np
+
 load_dotenv()
+
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+MODEL = "gpt-5.4"
 
 species = {
         0:  ["Betula_pendula",         "Brzoza brodawkowata"],
@@ -31,32 +35,26 @@ species = {
         19: ["Incorrect segmentation", "Błędna segmentacja"],
     }
 
+
 class LLM_Classifier:
-    def __init__(self, resolution: int, species: dict, API_KEY:str, model: str ):
+    def __init__(self, resolution: int, species: dict = species,
+                 API_KEY: str | None = OPENAI_API_KEY, model: str = MODEL):
         self.resolution = resolution
         self.species = species
-        self.client = OpenAi(api_key=API_KEY)
- 
+        self.client = OpenAI(api_key=API_KEY) if API_KEY is not None else None
+        self.model = model
 
-    def _claude2images(self, points: torch.Tensor, resolution_xy: int, margin_ratio: float = 0.05) -> torch.Tensor:
+    def _claude2images(self, points: torch.Tensor,
+                       resolution_xy: int | None = None,
+                       margin_ratio: float = 0.05) -> torch.Tensor:
         """
-        Converts a 3D point cloud into a set of 2D depth map images from multiple orthographic viewpoints.
-
-        The point cloud is first normalized into a cubic bounding volume with an optional margin.
-        Five depth maps are then rendered — top, front, back, left, and right — by projecting
-        points onto the corresponding axis-aligned planes and recording the distance from each
-        point to its respective camera wall. Each depth map is normalized to [0, 1] and returned
-        as a float32 tensor.
-
-        Args:
-            points (torch.Tensor): A (N, 3) tensor of 3D points (x, y, z).
-            resolution_xy (int): The pixel resolution of each output depth map (resolution_xy x resolution_xy).
-            margin_ratio (float): Fractional padding added around the bounding cube on each side. Default is 0.05.
-
-        Returns:
-            torch.Tensor: A (5, resolution_xy, resolution_xy) float32 tensor containing the five depth maps
-                        in the order: top, front, back, left, right.
+        Converts a 3D point cloud into 5 orthographic depth maps.
+        Returns: (5, resolution_xy, resolution_xy) float32 tensor
+                 in order: top, front, back, left, right.
         """
+        if resolution_xy is None:
+            resolution_xy = self.resolution
+
         points = points.type(torch.float64)
 
         min_xyz = points.min(dim=0).values
@@ -68,7 +66,6 @@ class LLM_Classifier:
 
         cube_min = center - cube_half
         cube_max = center + cube_half
-
 
         def to_grid(val, min_val, max_val):
             return torch.clamp(
@@ -92,16 +89,14 @@ class LLM_Classifier:
                 x_idx = resolution_xy - 1 - x_idx
 
             flat_indices = y_idx * resolution_xy + x_idx
-            depth_map = torch.full((resolution_xy * resolution_xy,), float('inf'), dtype=torch.float64,
-                                device=distances.device)
-
-            # Use scatter_reduce to keep the minimum distance per pixel
-            depth_map = torch.scatter_reduce(depth_map, 0, flat_indices, distances, reduce='amin', include_self=True)
+            depth_map = torch.full((resolution_xy * resolution_xy,), float('inf'),
+                                   dtype=torch.float64, device=distances.device)
+            depth_map = torch.scatter_reduce(depth_map, 0, flat_indices, distances,
+                                             reduce='amin', include_self=True)
 
             img = depth_map.view(resolution_xy, resolution_xy)
-            img[img == float('inf')] = 0  # Replace untouched pixels
+            img[img == float('inf')] = 0
 
-            # Normalize non-zero pixels to [0, 1]
             nonzero_mask = img > 0
             if torch.any(nonzero_mask):
                 values = img[nonzero_mask]
@@ -111,7 +106,6 @@ class LLM_Classifier:
 
             return img.type(torch.float32)
 
-        # Compute distance from each wall
         dist_top = cube_max[2] - z
         views.append(build_depth_map((gy, gx), dist_top))
 
@@ -128,26 +122,93 @@ class LLM_Classifier:
         views.append(build_depth_map((gz, gy), dist_right, flip_y=True, flip_x=True))
 
         return torch.stack(views, dim=0).type(torch.float32)
-    
-    def tensors_to_base64(self, tensor):
-        
-        img_base64 = []
-        for i in range(tensor.size[0]): 
-            # tensor to PIL image
-            pil_image = transforms.ToPILImage()(tensor(i))
 
-            #PIL Image to bytes
+    def tensors_to_base64(self, tensor: torch.Tensor) -> list[str]:
+        """Convert a (N, H, W) tensor of depth maps into a list of base64 PNG strings."""
+        images_base64 = []
+        to_pil = transforms.ToPILImage()
+
+        for i in range(tensor.shape[0]):
+            pil_image = to_pil(tensor[i])
+            pil_image.show()
+
             buffer = BytesIO()
-            pil_image.save(buffer, "PNG")
+            pil_image.save(buffer, format="PNG")
 
-            # bytes to base64 string
-            img_bytes = buffer.getvalue()
-            img_base64.append(base64.b64encode(img_bytes).decode("utf-8"))
+            images_bytes = buffer.getvalue()
+            images_base64.append(base64.b64encode(images_bytes).decode("utf-8"))
+        return images_base64
 
-        return img_base64
+    def api_call(self, images_base64: list[str]) -> int:
+        """
+        Sends the 5 depth-map views to the model and asks it to pick
+        a species key from self.species. Returns the integer key.
+        """
+        # Build a readable list of valid keys + Latin names for the prompt
+        species_list = "\n".join(
+            f"{k}: {v[0]} ({v[1]})" for k, v in self.species.items()
+        )
 
-    def api_call(self):
-        system_prompt = ""
+        system_prompt = (
+            "You are a forestry expert classifying trees from LiDAR point clouds. "
+            "You will be given 5 orthographic depth-map views of a single tree "
+            "(top, front, back, left, right). Based on overall shape, crown "
+            "structure, branching pattern and silhouette, identify the species. "
+            "You MUST respond with ONLY a single integer — the key from the "
+            "provided species dictionary. No explanation, no punctuation, "
+            "no extra text. Just the integer."
+        )
 
-        response = self.client.responses.create(model = self.mod)
+        user_text = (
+            "Classify this tree into exactly one of the following species. "
+            "Respond with ONLY the integer key.\n\n"
+            f"Valid keys and species:\n{species_list}"
+        )
 
+        content = [{"type": "input_text", "text": user_text}]
+        for b64 in images_base64:
+            content.append({
+                "type": "input_image",
+                "image_url": f"data:image/png;base64,{b64}",
+            })
+
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+        )
+
+        raw = response.output_text.strip()
+
+        # Robust parse: grab first integer in the reply
+        import re
+        match = re.search(r"-?\d+", raw)
+        if match is None:
+            raise ValueError(f"Could not parse species key from model reply: {raw!r}")
+
+        key = int(match.group(0))
+        if key not in self.species:
+            raise ValueError(f"Model returned key {key} not in species dict. Raw: {raw!r}")
+
+        return key
+
+    def classify(self, path: str) -> dict:
+        """
+        Full pipeline: point cloud -> 5 depth maps -> base64 -> LLM -> species key.
+
+        Returns:
+            dict with keys: 'key', 'latin', 'polish'
+        """
+        points = np.load(path)
+        points = torch.from_numpy(points)
+        depth_maps = self._claude2images(points)
+        images_b64 = self.tensors_to_base64(depth_maps)
+        key = self.api_call(images_b64)
+        latin, polish = self.species[key]
+        return {"key": key, "latin": latin, "polish": polish, 'path': path}
+
+PATH = 'trees/0_3.npy'
+clf = LLM_Classifier(512)
+print(clf.classify(path=PATH))
