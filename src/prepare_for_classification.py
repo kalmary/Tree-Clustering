@@ -9,10 +9,16 @@ from utils.visualize_trees import save_tree_projections_pdf
 from utils.plot_cloud import plot_cloud
 from array_processing_RE import TreeSegmRay
 
-from LLM_TreeClassifier import LLM_Classifier
+from api_multiple_classifier import LLM_Classifier
 from tqdm import tqdm
 
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+MODEL = "gpt-5.4"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -187,17 +193,16 @@ def append_tree_rows(
 # Main pipeline
 # ──────────────────────────────────────────────────────────────────────────────
 
-def main(species_dict: dict = None):
-    semantic_labelled_dir = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/alg_test2")
+def main(species_dict: dict | None = None):
+    semantic_labelled_dir = pth.Path("trees/laz")
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
                       gravity_factor=0.75, ground_label=1,
                       tree_label=7, verbose=True)
-
     config_dir = pth.Path(__file__).parent.joinpath("TreePCDClass/src/final_files")
-    tree_class_model = LLM_Classifier(resolution=350, species=species_dict)
+    tree_class_model = LLM_Classifier(resolution=512, species=species_dict, API_KEY=OPENAI_API_KEY, model=MODEL)
 
     seg.start_container()
 
@@ -280,7 +285,8 @@ def main(species_dict: dict = None):
 
         finally:
             seg.rm_container()
-
+            print(f"Prompt tokens used: {tree_class_model.prompt_tokens}")
+            print(f"Completion tokens used: {tree_class_model.completion_tokens}")
 
 if __name__ == "__main__":
     SPECIES = {

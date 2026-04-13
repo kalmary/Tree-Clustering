@@ -43,6 +43,9 @@ class LLM_Classifier:
         self.species = species
         self.client = OpenAI(api_key=API_KEY) if API_KEY is not None else None
         self.model = model
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+
 
     def _claude2images(self, points: torch.Tensor,
                        resolution_xy: int | None = None,
@@ -186,6 +189,9 @@ class LLM_Classifier:
             ],
         )
 
+        if hasattr(response, "usage") and response.usage is not None:
+            self.prompt_tokens += response.usage.input_tokens or 0
+            self.completion_tokens += response.usage.output_tokens or 0
         raw = response.output_text.strip()
 
         # Robust parse: grab first integer in the reply
@@ -221,3 +227,5 @@ class LLM_Classifier:
 PATH = 'trees/0_3.npy'
 clf = LLM_Classifier(512)
 print(clf.classify(path=PATH))
+print(clf.prompt_tokens)
+print(clf.completion_tokens)

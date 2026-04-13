@@ -43,6 +43,8 @@ class LLM_Classifier:
         self.species = species
         self.client = OpenAI(api_key=API_KEY) if API_KEY is not None else None
         self.model = model
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
 
     def _claude2images(self, points: torch.Tensor,
                        resolution_xy: int | None = None,
@@ -130,7 +132,7 @@ class LLM_Classifier:
 
         for i in range(tensor.shape[0]):
             pil_image = to_pil(tensor[i])
-            pil_image.show()
+            #pil_image.show()
 
             buffer = BytesIO()
             pil_image.save(buffer, format="PNG")
@@ -185,6 +187,9 @@ class LLM_Classifier:
                 {"role": "user", "content": content},
             ],
         )
+        if hasattr(response, "usage") and response.usage is not None:
+            self.prompt_tokens += response.usage.input_tokens or 0
+            self.completion_tokens += response.usage.output_tokens or 0
 
         raw = response.output_text.strip()
 
@@ -203,21 +208,16 @@ class LLM_Classifier:
 
         return key
 
-    def classify(self, path: str) -> dict:
+    def predict(self, points) -> int:
         """
         Full pipeline: point cloud -> 5 depth maps -> base64 -> LLM -> species key.
 
         Returns:
             dict with keys: 'key', 'latin', 'polish'
         """
-        points = np.load(path)
         points = torch.from_numpy(points)
         depth_maps = self._claude2images(points)
         images_b64 = self.tensors_to_base64(depth_maps)
         key = self.api_call(images_b64)
-        latin, polish = self.species[key]
-        return {"key": key, "latin": latin, "polish": polish, 'path': path}
+        return key
 
-PATH = 'trees/0_3.npy'
-clf = LLM_Classifier(512)
-print(clf.classify(path=PATH))
