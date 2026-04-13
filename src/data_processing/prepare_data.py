@@ -14,6 +14,7 @@ import sys
 sys.path.append(str(src_dir))
 
 
+
 def read_laz_dir(laz_dir: Path):
     """
     Read all .laz files in directory (recursive).
@@ -302,6 +303,7 @@ def main():
     split_dir = Path("data/split")
 
     laz_data = read_laz_dir(input_dir)
+
 
     for laz_path, points, tree_ids in tqdm(
         laz_data, desc="Processing LAZ files"

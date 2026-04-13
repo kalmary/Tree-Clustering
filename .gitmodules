@@ -1,0 +1,3 @@
+[submodule "src/TreePCDClass"]
+	path = src/TreePCDClass
+	url = https://github.com/kalmary/Tree-Point-Cloud-Classification.git

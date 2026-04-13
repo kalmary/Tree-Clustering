@@ -1,0 +1,10 @@
+{
+    "height_min": 2.0,
+    "max_diameter": 0.7,
+    "distance_limit": 0.15,
+    "gravity_factor": 0.6,
+    "use_rays": true,
+    "ground_label": 2,
+    "tree_label": 7,
+    "verbose": false
+}
