@@ -679,8 +679,8 @@ class TreeSegmRay:
 def main():
     import laspy
 
-    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
-                      gravity_factor=0.75, ground_label=1,
+    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.25,
+                      gravity_factor=0.8, ground_label=1,
                       tree_label=7, verbose=False)
 
     for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_CUT/BRIK_Grajewo_21_3_mod.laz"]:
