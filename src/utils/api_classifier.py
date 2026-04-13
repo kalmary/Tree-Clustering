@@ -153,19 +153,24 @@ class LLM_Classifier:
             "You are a forestry expert classifying trees from LiDAR point clouds. "
             "You will be given 5 orthographic depth-map views of a single tree "
             "(top, front, back, left, right). Based on overall shape, crown "
-            "structure, branching pattern and silhouette, identify the species. "
-            "You MUST respond with ONLY a single integer — the key from the "
-            "provided species dictionary. No explanation, no punctuation, "
-            "no extra text. Just the integer."
+            "structure, branching pattern, trunk form, and silhouette, identify "
+            "the single best matching species from the provided species dictionary. "
+            "Use all 5 views together and rely only on visible structural evidence in "
+            "the depth maps. Be consistent and conservative: if uncertain, choose the "
+            "closest match from the provided list based on overall 3D form rather than "
+            "guessing from minor artifacts. You MUST respond with ONLY a single integer "
+            "— the key from the provided species dictionary. No explanation, no "
+            "punctuation, no extra text. Just the integer."
         )
 
         user_text = (
             "Classify this tree into exactly one of the following species. "
-            "Respond with ONLY the integer key.\n\n"
+            "Consider all 5 views before deciding, and respond with ONLY the integer key.\n\n"
             f"Valid keys and species:\n{species_list}"
         )
 
         content = [{"type": "input_text", "text": user_text}]
+
         for b64 in images_base64:
             content.append({
                 "type": "input_image",
@@ -174,6 +179,7 @@ class LLM_Classifier:
 
         response = self.client.responses.create(
             model=self.model,
+            temperature=0,
             input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
@@ -189,8 +195,11 @@ class LLM_Classifier:
             raise ValueError(f"Could not parse species key from model reply: {raw!r}")
 
         key = int(match.group(0))
+
         if key not in self.species:
-            raise ValueError(f"Model returned key {key} not in species dict. Raw: {raw!r}")
+            raise ValueError(
+                f"Model returned key {key} not in species dict. Raw: {raw!r}"
+            )
 
         return key
 
