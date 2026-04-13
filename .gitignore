@@ -167,3 +167,9 @@ cython_debug/
 **/train/
 **/test/
 **/val/
+
+*.xlsx#
+*.pdf
+*.xlsx
+*.laz
+**/split/
