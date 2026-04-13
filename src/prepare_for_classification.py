@@ -6,6 +6,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
 from utils.visualize_trees import save_tree_projections_pdf
+from utils.plot_cloud import plot_cloud
 from array_processing_RE import TreeSegmRay
 
 from LLM_TreeClassifier import LLM_Classifier
@@ -187,7 +188,7 @@ def append_tree_rows(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main(species_dict: dict = None):
-    semantic_labelled_dir = pth.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT")
+    semantic_labelled_dir = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/alg_test2")
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -222,7 +223,17 @@ def main(species_dict: dict = None):
             print(path)
             las = laspy.read(path)
             pts = np.vstack([las.x, las.y, las.z]).T.astype(np.float64)
+            pts -= pts.mean(axis=0)
+            pts = pts.astype(np.float32)
+            
+            # mask, keep pcd in 50 x 50 m TODO rm later
+            # mask = (pts[:, 0] > -10) & (pts[:, 0] < 10) & (pts[:, 1] > -10) & (pts[:, 1] < 10)
+            # pts = pts[mask]
+
             cls = np.asarray(las.classification, dtype=np.int32)
+            # cls = cls[mask]
+
+            plot_cloud(pts, cls)
 
         except Exception as e:
 

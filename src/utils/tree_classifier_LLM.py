@@ -45,12 +45,12 @@ class TreeSpeciesClassifier:
     """
 
     _PROMPT_TEMPLATE = (
-        "You are an expert forest ecologist. "
-        "You are given {n_views} grayscale depth-map images of a single tree, "
-        "each showing a different side view: {view_names}. "
-        "Based on the tree's overall shape, crown form, and branching structure "
-        "visible across all views, identify the most likely tree species.\n\n"
-        "Reply with ONLY the integer class number -- nothing else.\n\n"
+        f"You are an expert forest ecologist. "
+        f"You are given len({view_names}) grayscale depth-map images of a single tree,"
+        f"each showing a different side view: {view_names}. "
+        f"Based on the tree's overall shape, crown form, and branching structure "
+        f"visible across all views, identify the most likely tree species.\n\n"
+        f"Reply with ONLY the integer class number -- nothing else.\n\n"
         "Classes:\n{species_list}\n\n"
         "Reply with the single integer."
     )
