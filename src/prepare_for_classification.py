@@ -202,7 +202,8 @@ def main(species_dict: dict | None = None):
                       gravity_factor=0.75, ground_label=1,
                       tree_label=7, verbose=True)
     config_dir = pth.Path(__file__).parent.joinpath("TreePCDClass/src/final_files")
-    tree_class_model = LLM_Classifier(resolution=512, species=species_dict, API_KEY=OPENAI_API_KEY, model=MODEL)
+    tree_class_model = LLM_Classifier(resolution=512, species=species_dict,
+                                      API_KEY=OPENAI_API_KEY, model=MODEL)
 
     seg.start_container()
 
@@ -310,6 +311,6 @@ if __name__ == "__main__":
             17: ["Picea_abies",            "Świerk pospolity"],
             18: ["Other",                  "Inne"],
             19: ["Incorrect segmentation", "Błędna segmentacja"],
-    }
+        }
 
     main(species_dict=SPECIES)

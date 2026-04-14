@@ -1,44 +1,13 @@
-import os
-from dotenv import load_dotenv
 import torch
 from torchvision import transforms
 import base64
 from io import BytesIO
 from openai import OpenAI
-import numpy as np
-
-load_dotenv()
-
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-MODEL = "gpt-5.4"
-
-species = {
-        0:  ["Betula_pendula",         "Brzoza brodawkowata"],
-        1:  ["Fagus_sylvatica",        "Buk zwyczajny"],
-        2:  ["Quercus_petraea",        "Dąb bezszypułkowy"],
-        3:  ["Quercus_rubra",          "Dąb czerwony"],
-        4:  ["Quercus_robur",          "Dąb szypułkowy"],
-        5:  ["Carpinus_betulus",       "Grab pospolity"],
-        6:  ["Fraxinus_excelsior",     "Jesion wyniosły"],
-        7:  ["Acer_pseudoplatanus",    "Klon jawor"],
-        8:  ["Acer_campestre",         "Klon polny"],
-        9:  ["Tilia_cordata",          "Lipa drobnolistna"],
-        10: ["Ulmus_laevis",           "Wiąz szypułkowy"],
-        11: ["Crataegus_monogyna",     "Głóg jednoszyjkowy"],
-        12: ["Corylus_avellana",       "Leszczyna pospolita"],
-        13: ["Pseudotsuga_menziesii",  "Daglezja zielona"],
-        14: ["Abies_alba",             "Jodła pospolita"],
-        15: ["Larix_decidua",          "Modrzew europejski"],
-        16: ["Pinus_sylvestris",       "Sosna zwyczajna"],
-        17: ["Picea_abies",            "Świerk pospolity"],
-        18: ["Other",                  "Inne"],
-        19: ["Incorrect segmentation", "Błędna segmentacja"],
-    }
 
 
 class LLM_Classifier:
-    def __init__(self, resolution: int, species: dict = species,
-                 API_KEY: str | None = OPENAI_API_KEY, model: str = MODEL):
+    def __init__(self, resolution: int, species: dict,
+                 API_KEY: str | None, model: str):
         self.resolution = resolution
         self.species = species
         self.client = OpenAI(api_key=API_KEY) if API_KEY is not None else None
@@ -132,52 +101,97 @@ class LLM_Classifier:
 
         for i in range(tensor.shape[0]):
             pil_image = to_pil(tensor[i])
-            #pil_image.show()
-
             buffer = BytesIO()
             pil_image.save(buffer, format="PNG")
-
             images_bytes = buffer.getvalue()
             images_base64.append(base64.b64encode(images_bytes).decode("utf-8"))
         return images_base64
+
+    # Fixed view order produced by _claude2images
+    VIEW_NAMES = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
 
     def api_call(self, images_base64: list[str]) -> int:
         """
         Sends the 5 depth-map views to the model and asks it to pick
         a species key from self.species. Returns the integer key.
         """
-        # Build a readable list of valid keys + Latin names for the prompt
-        species_list = "\n".join(
-            f"{k}: {v[0]} ({v[1]})" for k, v in self.species.items()
+        assert len(images_base64) == len(self.VIEW_NAMES), (
+            f"Expected {len(self.VIEW_NAMES)} views, got {len(images_base64)}"
         )
 
+        # Render the species list once, deterministically ordered
+        species_lines = "\n".join(
+            f"  <species key=\"{k}\">{v[1]}</species>"
+            for k, v in sorted(self.species.items(), key=lambda kv: kv[0])
+        )
+        valid_keys = ", ".join(str(k) for k in sorted(self.species.keys()))
+
         system_prompt = (
-            "You are a forestry expert classifying trees from LiDAR point clouds. "
-            "You will be given 5 orthographic depth-map views of a single tree "
-            "(top, front, back, left, right). Based on overall shape, crown "
-            "structure, branching pattern, trunk form, and silhouette, identify "
-            "the single best matching species from the provided species dictionary. "
-            "Use all 5 views together and rely only on visible structural evidence in "
-            "the depth maps. Be consistent and conservative: if uncertain, choose the "
-            "closest match from the provided list based on overall 3D form rather than "
-            "guessing from minor artifacts. You MUST respond with ONLY a single integer "
-            "— the key from the provided species dictionary. No explanation, no "
-            "punctuation, no extra text. Just the integer."
+            "<role>\n"
+            "You are a dendrologist specialised in tree species identification "
+            "from airborne and terrestrial LiDAR point clouds. You reason about "
+            "3D tree structure from rasterised orthographic depth maps.\n"
+            "</role>\n\n"
+            "<task>\n"
+            "Identify the single best-matching species of one tree, given five "
+            "orthographic depth-map views of its point cloud.\n"
+            "</task>\n\n"
+            "<input_format>\n"
+            "You receive exactly five grayscale depth maps in this fixed order:\n"
+            "  1. TOP    — looking straight down (-Z), shows crown footprint and branch spread.\n"
+            "  2. FRONT  — looking along -Y, shows full silhouette and trunk.\n"
+            "  3. BACK   — looking along +Y, mirror of FRONT.\n"
+            "  4. LEFT   — looking along -X.\n"
+            "  5. RIGHT  — looking along +X, mirror of LEFT.\n"
+            "Brighter pixels are closer to the camera; black is empty space. "
+            "Each view is independently min-max normalised, so absolute brightness "
+            "is not comparable across views — only shape is.\n"
+            "</input_format>\n\n"
+            "<reasoning_guidelines>\n"
+            "Use ALL five views jointly. Base your decision on structural evidence:\n"
+            "  - Overall silhouette and height-to-width ratio (FRONT/BACK/LEFT/RIGHT).\n"
+            "  - Crown shape: conical, columnar, rounded, spreading, weeping, irregular.\n"
+            "  - Crown footprint and symmetry (TOP).\n"
+            "  - Branching pattern: opposite vs alternate, dense vs sparse, ascending vs horizontal vs drooping.\n"
+            "  - Trunk form: straight single leader vs forked vs leaning; relative trunk thickness.\n"
+            "  - Foliage density and texture as visible in the depth map.\n"
+            "Ignore scanning artefacts, isolated stray points, and ground/understorey returns. "
+            "Do NOT infer colour, bark texture, leaf shape, or seasonality — they are not visible. "
+            "If multiple species are plausible, pick the one whose typical 3D form best matches "
+            "the combined evidence across all five views. Never invent a species not in the list.\n"
+            "</reasoning_guidelines>\n\n"
+            "<output_contract>\n"
+            "Respond with EXACTLY ONE integer — the key from the species list — "
+            "and nothing else. No words, no punctuation, no whitespace beyond the digits, "
+            "no markdown, no code fences, no explanation. Any deviation is an error.\n"
+            "</output_contract>"
         )
 
         user_text = (
-            "Classify this tree into exactly one of the following species. "
-            "Consider all 5 views before deciding, and respond with ONLY the integer key.\n\n"
-            f"Valid keys and species:\n{species_list}"
+            "<species_list>\n"
+            f"{species_lines}\n"
+            "</species_list>\n\n"
+            f"<valid_keys>{valid_keys}</valid_keys>\n\n"
+            "<instructions>\n"
+            "The five attached images are, in order: TOP, FRONT, BACK, LEFT, RIGHT "
+            "(each labelled in the message). Examine all of them, reason silently about "
+            "the tree's 3D structure, and output the integer key of the best matching species.\n"
+            "</instructions>"
         )
 
-        content = [{"type": "input_text", "text": user_text}]
-
-        for b64 in images_base64:
+        # Anthropic and OpenAI both recommend placing images BEFORE the
+        # final textual instruction for best vision performance. We also
+        # interleave a short text label before each image so the model can
+        # bind each picture to its view name unambiguously.
+        content = []
+        for name, b64 in zip(self.VIEW_NAMES, images_base64):
+            content.append({"type": "input_text", "text": f"View: {name}"})
             content.append({
                 "type": "input_image",
                 "image_url": f"data:image/png;base64,{b64}",
+                "detail": "low"
             })
+        content.append({"type": "input_text", "text": user_text})
 
         response = self.client.responses.create(
             model=self.model,
@@ -193,7 +207,6 @@ class LLM_Classifier:
 
         raw = response.output_text.strip()
 
-        # Robust parse: grab first integer in the reply
         import re
         match = re.search(r"-?\d+", raw)
         if match is None:
@@ -211,13 +224,9 @@ class LLM_Classifier:
     def predict(self, points) -> int:
         """
         Full pipeline: point cloud -> 5 depth maps -> base64 -> LLM -> species key.
-
-        Returns:
-            dict with keys: 'key', 'latin', 'polish'
         """
         points = torch.from_numpy(points)
         depth_maps = self._claude2images(points)
         images_b64 = self.tensors_to_base64(depth_maps)
         key = self.api_call(images_b64)
         return key
-
