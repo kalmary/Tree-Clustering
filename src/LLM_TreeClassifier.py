@@ -4,6 +4,7 @@ import ollama
 from PIL import Image
 import tempfile
 import os
+import re
 
 class LLM_Classifier:
     def __init__(self,
@@ -19,19 +20,31 @@ class LLM_Classifier:
         self.views = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
         # Construct the species list for the prompt
         self.prompt = (
-            f"You are an expert forest ecologist. "
-            f"You are given len({self.views}) grayscale depth-map images of a single tree,"
-            f"each showing a different side view: {self.views}. "
-            f"Based on the tree's overall shape, crown form, and branching structure "
-            f"visible across all views, identify the most likely tree species. Incorrect segmentation is when:"
-            f"- More than one tree is present in the image. You can tell it by observing multiple distant trunks in the lower part of the image.\n"
-            f"- The tree is incomplete/ has missing parts in any view or additional parts which are enough to make identification non reliable.\n"
-            f"Reply with ONLY the integer class number -- nothing else.\n\n"
-            f"Classes:\n{self.species}\n\n"
-            f"Reply with the single integer and NOTHING more."
+            f"STRICT INSTRUCTION: Analyze the provided {len(self.views)} grayscale depth-maps. "
+            f"Output exactly one integer. Explanations are strictly prohibited.\n\n"
+            
+            f"DATA ORDER: {self.views} (Top-down brightness = proximity).\n\n"
+            
+            f"VALIDATION (PRIORITY 1):\n"
+            f"- If multiple trunks are visible in lower half: Return 19\n"
+            f"- If tree structure is cut off or heavily missing: Return 19\n"
+            f"- If severe non-natural artifacts make ID impossible: Return 19\n\n"
+            
+            f"CLASSIFICATION (PRIORITY 2):\n"
+            f"Identify species ID from this list:\n{self.species}\n\n"
+            
+            f"FORMATTING:\n"
+            f"Response must be [INTEGER].\n"
+            f"Any reasoning is prohibited."
+            f"FINAL OUTPUT:"
         )
         self.model_name = model_name
 
+    @staticmethod
+    def clean_output(model_response):
+        # Extracts only the digits and signs
+        numbers = re.findall(r"-?\d+", model_response)
+        return int(numbers[0]) if numbers else None
 
     def predict(self, cloud: np.ndarray) -> int:
         # 1. Generate the 5 depth-map views
@@ -57,19 +70,50 @@ class LLM_Classifier:
                 'content': self.prompt,
                 'images': image_paths
             }],
-            options={'temperature': 0} # Set to 0 for deterministic classification
+            options={
+                'temperature': 0
+            } # Set to 0 for deterministic classification
         )
 
         # 5. Cleanup temp files
         for p in image_paths:
             os.remove(p)
 
-        # 6. Parse and return the integer
         try:
-            return int(response.message.content.strip())
+            return self.clean_output(response.message.content)
         except ValueError:
             print(f"Warning: Model returned non-integer response: {response.message.content}")
-            return -1
+            return self._parse_response(response.message.content.strip())
+        
+    def _parse_response(self, text: str) -> int:
+        text = text.strip()
+        
+        # Try direct int parse first
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        
+        # Fallback: scan for species names, return label of LAST match
+        last_match_pos = -1
+        last_label = -1
+
+        
+        text_lower = text.lower()
+        for label, name in self.species.items():
+            name_str = name if isinstance(name, str) else str(name[0]) if name else ""
+            pos = text_lower.rfind(name_str.lower())
+            if pos > last_match_pos:
+                last_match_pos = pos
+                last_label = label
+                last_label = int(last_label.strip("[] "))
+        
+        if last_label != -1:
+            print(f"Warning: Used species name fallback ('{self.species[last_label]}') from: {text}")
+            return last_label
+        
+        print(f"Warning: Model returned unparseable response: {text}")
+        return -1
 
     def _cloud2sideViews(self, points: np.ndarray, margin_ratio: float = 0.05) -> torch.Tensor:
         # (Your existing logic here - corrected the reference to resolution_xy)

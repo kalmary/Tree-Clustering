@@ -25,68 +25,6 @@ from tqdm import tqdm
 # reserved exclusively for manual annotation by a specialist.
 #
 # Update this list if you retrain the old model with different species.
-
-
-def _build_translator(species_dict: dict) -> dict:
-    """Build a lookup from any raw old-model label to a SPECIES latin name.
-
-    The raw label coming out of TreeClassifier.predict() may be an int (the
-    LabelEncoder numeric index) or a string (the decoded class name).  Both
-    are handled: the returned dict has both int and str keys for every entry.
-
-    Key 19 ("Incorrect segmentation") is never a target — only a specialist
-    can assign it.
-    """
-    latin_to_new: dict[str, int] = {
-        v[0].lower(): k
-        for k, v in species_dict.items()
-        if k != 19
-    }
-
-    translator: dict = {}
-    n = len(OLD_MODEL_CLASSES)
-
-    for idx, old_name in enumerate(OLD_MODEL_CLASSES):
-        if old_name.lower() == "others":
-            new_latin = species_dict[18][0]  # → "Other"
-        else:
-            normalised = old_name.lower().replace(" ", "_")
-            new_key = latin_to_new.get(normalised)
-            if new_key is None:
-                # substring fallback
-                new_key = next(
-                    (k for lat, k in latin_to_new.items()
-                     if normalised in lat or lat in normalised),
-                    18,  # unknown → Other
-                )
-            new_latin = species_dict[new_key][0]
-
-        # register both int index and string name as keys
-        translator[idx]      = new_latin
-        translator[old_name] = new_latin
-
-    return translator
-
-
-def translate_predictions(
-    raw_predictions: dict[int, object],
-    translator: dict,
-) -> dict[int, str]:
-    """Map raw old-model labels (int or str) to new SPECIES latin names.
-
-    Falls back to str(raw) for any label not found in the translator —
-    this covers unexpected model outputs without crashing.
-    """
-    return {
-        tree_id: translator.get(raw, str(raw))
-        for tree_id, raw in raw_predictions.items()
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Excel helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
 def _header_cell(cell, text: str):
     cell.value     = text
     cell.font      = Font(name="Arial", bold=True, color="FFFFFF")
@@ -188,7 +126,7 @@ def append_tree_rows(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main(species_dict: dict = None):
-    semantic_labelled_dir = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/alg_test2")
+    semantic_labelled_dir = pth.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT")
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -196,7 +134,6 @@ def main(species_dict: dict = None):
                       gravity_factor=0.75, ground_label=1,
                       tree_label=7, verbose=True)
 
-    config_dir = pth.Path(__file__).parent.joinpath("TreePCDClass/src/final_files")
     tree_class_model = LLM_Classifier(resolution=350, species=species_dict)
 
     seg.start_container()
@@ -232,8 +169,6 @@ def main(species_dict: dict = None):
 
             cls = np.asarray(las.classification, dtype=np.int32)
             # cls = cls[mask]
-
-            plot_cloud(pts, cls)
 
         except Exception as e:
 
