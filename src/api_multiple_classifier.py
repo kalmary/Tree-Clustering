@@ -179,17 +179,12 @@ class LLM_Classifier:
             "</instructions>"
         )
 
-        # Anthropic and OpenAI both recommend placing images BEFORE the
-        # final textual instruction for best vision performance. We also
-        # interleave a short text label before each image so the model can
-        # bind each picture to its view name unambiguously.
         content = []
         for name, b64 in zip(self.VIEW_NAMES, images_base64):
             content.append({"type": "input_text", "text": f"View: {name}"})
             content.append({
                 "type": "input_image",
-                "image_url": f"data:image/png;base64,{b64}",
-                "detail": "low"
+                "image_url": f"data:image/png;base64,{b64}"
             })
         content.append({"type": "input_text", "text": user_text})
 
