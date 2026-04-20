@@ -14,6 +14,7 @@ class LLM_Classifier:
         self.model = model
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.cached_tokens = 0
 
     def _claude2images(self, points: torch.Tensor,
                        resolution_xy: int | None = None,
@@ -160,10 +161,16 @@ class LLM_Classifier:
             "If multiple species are plausible, pick the one whose typical 3D form best matches "
             "the combined evidence across all five views. Never invent a species not in the list.\n"
             "</reasoning_guidelines>\n\n"
+            "<validation_rules>\n"
+            "Before committing to a species key, check the following. Return '19' if ANY of them hold:\n"
+            "  1. MULTIPLE TRUNKS: You observe more than one distinct trunk in the lower half of the images.\n"
+            "  2. INCOMPLETE DATA: A large part of the tree crown or trunk is cut off, or large sections are missing.\n"
+            "  3. NOISE: Significant structural artefacts exist that make identification unreliable "
+            "(images are low-res; minor noise should NOT be considered an artefact).\n"
+            "Only if none of these conditions apply, proceed to pick the best-matching species from the list.\n"
+            "</validation_rules>\n\n"
             "<output_contract>\n"
-            "Respond with EXACTLY ONE integer — the key from the species list — "
-            "and nothing else. No words, no punctuation, no whitespace beyond the digits, "
-            "no markdown, no code fences, no explanation. Any deviation is an error.\n"
+            "Respond with EXACTLY ONE integer — the key from the species list, or 19 if a validation rule is triggered"
             "</output_contract>"
         )
 
@@ -184,7 +191,8 @@ class LLM_Classifier:
             content.append({"type": "input_text", "text": f"View: {name}"})
             content.append({
                 "type": "input_image",
-                "image_url": f"data:image/png;base64,{b64}"
+                "image_url": f"data:image/png;base64,{b64}",
+                "detail": "low"
             })
         content.append({"type": "input_text", "text": user_text})
 
@@ -199,6 +207,8 @@ class LLM_Classifier:
         if hasattr(response, "usage") and response.usage is not None:
             self.prompt_tokens += response.usage.input_tokens or 0
             self.completion_tokens += response.usage.output_tokens or 0
+            details = getattr(response.usage, "input_tokens_details", None)
+            self.cached_tokens += getattr(details, "cached_tokens", 0) or 0
 
         raw = response.output_text.strip()
 

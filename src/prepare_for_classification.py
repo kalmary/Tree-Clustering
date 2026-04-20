@@ -286,8 +286,9 @@ def main(species_dict: dict | None = None):
 
         finally:
             seg.rm_container()
-            print(f"Prompt tokens used: {tree_class_model.prompt_tokens}")
-            print(f"Completion tokens used: {tree_class_model.completion_tokens}")
+            print(f"Prompt tokens used: {tree_class_model.prompt_tokens}",
+                  f"Completion tokens used: {tree_class_model.completion_tokens}",
+                  f"Cached input tokens: {tree_class_model.cached_tokens}")
 
 if __name__ == "__main__":
     SPECIES = {
