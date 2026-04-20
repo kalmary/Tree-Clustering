@@ -126,7 +126,7 @@ class LLM_Classifier:
 
         # Render the species list once, deterministically ordered
         species_lines = "\n".join(
-            f"  <species key=\"{k}\">{v[1]}</species>"
+            f"  <species key=\"{k}\">{v[0]}</species>"
             for k, v in sorted(self.species.items(), key=lambda kv: kv[0])
         )
         valid_keys = ", ".join(str(k) for k in sorted(self.species.keys()))
@@ -161,6 +161,10 @@ class LLM_Classifier:
             "  - Trunk form: straight single leader vs forked vs leaning; relative trunk thickness.\n"
             "  - Foliage density and texture as visible in the depth map.\n"
             "Ignore scanning artefacts, isolated stray points, and ground/understorey returns. "
+            "VALIDATION (PRIORITY 1):\n"
+            "- If multiple trunks are visible in lower half: Return 19\n"
+            "- If tree structure is cut off or heavily missing: Return 19\n"
+            "- If severe non-natural artifacts make identification impossible: Return 19\n\n"
             "Do NOT infer colour, bark texture, leaf shape, or seasonality — they are not visible. "
             "If multiple species are plausible, pick the one whose typical 3D form best matches "
             "the combined evidence across all five views. Never invent a species not in the list.\n"
