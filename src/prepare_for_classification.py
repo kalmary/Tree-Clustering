@@ -9,7 +9,11 @@ from utils.visualize_trees import save_tree_projections_pdf
 from utils.plot_cloud import plot_cloud
 from array_processing_RE import TreeSegmRay
 
+<<<<<<< HEAD
 from api_multiple_classifier import LLM_Classifier
+=======
+from GPT_TreeClassifier import LLM_Classifier
+>>>>>>> main
 from tqdm import tqdm
 
 import os
@@ -31,68 +35,6 @@ MODEL = "gpt-5.4"
 # reserved exclusively for manual annotation by a specialist.
 #
 # Update this list if you retrain the old model with different species.
-
-
-def _build_translator(species_dict: dict) -> dict:
-    """Build a lookup from any raw old-model label to a SPECIES latin name.
-
-    The raw label coming out of TreeClassifier.predict() may be an int (the
-    LabelEncoder numeric index) or a string (the decoded class name).  Both
-    are handled: the returned dict has both int and str keys for every entry.
-
-    Key 19 ("Incorrect segmentation") is never a target — only a specialist
-    can assign it.
-    """
-    latin_to_new: dict[str, int] = {
-        v[0].lower(): k
-        for k, v in species_dict.items()
-        if k != 19
-    }
-
-    translator: dict = {}
-    n = len(OLD_MODEL_CLASSES)
-
-    for idx, old_name in enumerate(OLD_MODEL_CLASSES):
-        if old_name.lower() == "others":
-            new_latin = species_dict[18][0]  # → "Other"
-        else:
-            normalised = old_name.lower().replace(" ", "_")
-            new_key = latin_to_new.get(normalised)
-            if new_key is None:
-                # substring fallback
-                new_key = next(
-                    (k for lat, k in latin_to_new.items()
-                     if normalised in lat or lat in normalised),
-                    18,  # unknown → Other
-                )
-            new_latin = species_dict[new_key][0]
-
-        # register both int index and string name as keys
-        translator[idx]      = new_latin
-        translator[old_name] = new_latin
-
-    return translator
-
-
-def translate_predictions(
-    raw_predictions: dict[int, object],
-    translator: dict,
-) -> dict[int, str]:
-    """Map raw old-model labels (int or str) to new SPECIES latin names.
-
-    Falls back to str(raw) for any label not found in the translator —
-    this covers unexpected model outputs without crashing.
-    """
-    return {
-        tree_id: translator.get(raw, str(raw))
-        for tree_id, raw in raw_predictions.items()
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Excel helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
 def _header_cell(cell, text: str):
     cell.value     = text
     cell.font      = Font(name="Arial", bold=True, color="FFFFFF")
@@ -193,12 +135,12 @@ def append_tree_rows(
 # Main pipeline
 # ──────────────────────────────────────────────────────────────────────────────
 
-def main(species_dict: dict | None = None):
+def main(species_dict: dict):
     semantic_labelled_dir = pth.Path("trees/laz")
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
+    seg = TreeSegmRay(height_min=2.0, max_diameter=0.9, distance_limit=0.3,
                       gravity_factor=0.75, ground_label=1,
                       tree_label=7, verbose=True)
     config_dir = pth.Path(__file__).parent.joinpath("TreePCDClass/src/final_files")
@@ -226,7 +168,6 @@ def main(species_dict: dict | None = None):
                 # print(f"[CLEANUP] Removed stale {stale.name}")
 
         try:
-            print(path)
             las = laspy.read(path)
             pts = np.vstack([las.x, las.y, las.z]).T.astype(np.float64)
             pts -= pts.mean(axis=0)
@@ -238,8 +179,6 @@ def main(species_dict: dict | None = None):
 
             cls = np.asarray(las.classification, dtype=np.int32)
             # cls = cls[mask]
-
-            plot_cloud(pts, cls)
 
         except Exception as e:
 
@@ -268,10 +207,6 @@ def main(species_dict: dict | None = None):
                 device=device,
                 tree_classifier=tree_class_model if species_dict is not None else None,
             )
-
-            # Remap old-model class labels to new SPECIES dict names.
-            # "Incorrect segmentation" (key 19) is never emitted by the old model
-            # and is left blank — the specialist decides which trees get it.
 
             if species_dict is not None:
                 wb, next_row = _load_or_create_workbook(xlsx_path, species_dict)
