@@ -226,12 +226,23 @@ if __name__ == "__main__":
         18: ["Other",                  "Inne"],
         19: ["Incorrect segmentation", "Błędna segmentacja"],
     }
+    import os
+    from dotenv import load_dotenv
 
-    classifier = LLM_Classifier(resolution=350, species=SPECIES)
+    load_dotenv()
+
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+    MODEL = "gpt-5.4"
+    # from LLM_TreeClassifier import LLM_Classifier
+
+    classifier = LLM_Classifier(resolution=350,
+                                species=SPECIES,
+                                API_KEY=OPENAI_API_KEY,
+                                model=MODEL)
 
     reclassify_trees(
         src_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT"),
-        dst_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT_CLASSIFIED"),
+        dst_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT2"),
         classifier  = classifier,
         species_dict= SPECIES,
         overwrite   = False,
