@@ -26,7 +26,7 @@ class TreeSegmRayConfig:
     distance_limit:      float         = 0.3
     girth_height_ratio:  float         = 0.12
     gravity_factor:      float         = 0.75
-    global_taper:        Optional[float] = None
+    global_taper:        Optional[float] = None # all below no need to change
     global_taper_factor: Optional[float] = None
     grid_width:          Optional[float] = None
     use_rays:            bool          = False
