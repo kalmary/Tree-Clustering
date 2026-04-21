@@ -136,9 +136,7 @@ def main(species_dict: dict = None):
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
-                      gravity_factor=0.75, ground_label=1,
-                      tree_label=7, verbose=True)
+    seg = TreeSegmRay(verbose=True)
 
     tree_class_model = LLM_Classifier(resolution=350, species=species_dict)
 
