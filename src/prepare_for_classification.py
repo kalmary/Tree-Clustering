@@ -9,10 +9,16 @@ from utils.visualize_trees import save_tree_projections_pdf
 from utils.plot_cloud import plot_cloud
 from array_processing_RE import TreeSegmRay
 
-from LLM_TreeClassifier import LLM_Classifier
+from GPT_TreeClassifier import LLM_Classifier
 from tqdm import tqdm
 
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+MODEL = "gpt-5.4"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -157,7 +163,6 @@ def main(species_dict: dict = None):
                 # print(f"[CLEANUP] Removed stale {stale.name}")
 
         try:
-            print(path)
             las = laspy.read(path)
             pts = np.vstack([las.x, las.y, las.z]).T.astype(np.float64)
             pts -= pts.mean(axis=0)
@@ -197,10 +202,6 @@ def main(species_dict: dict = None):
                 device=device,
                 tree_classifier=tree_class_model if species_dict is not None else None,
             )
-
-            # Remap old-model class labels to new SPECIES dict names.
-            # "Incorrect segmentation" (key 19) is never emitted by the old model
-            # and is left blank — the specialist decides which trees get it.
 
             if species_dict is not None:
                 wb, next_row = _load_or_create_workbook(xlsx_path, species_dict)
