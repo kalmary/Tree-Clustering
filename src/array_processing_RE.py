@@ -16,7 +16,9 @@ from pprint import pprint
 import gc
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import Optional, Union
+import pathlib as pth
+import json
 
 @dataclass
 class TreeSegmRayConfig:
@@ -74,7 +76,15 @@ class TreeSegmRay:
         self._backend        = self._detect_backend()
 
     @classmethod
-    def from_config(cls, cfg: dict, verbose: bool = False) -> "TreeSegmRay":
+    def from_config(cls, cfg_path: Optional[Union[str, pth.Path]] = None, cfg: Optional[dict] = None, verbose: bool = False) -> "TreeSegmRay":
+
+        if cfg_path is None and cfg is None:
+            raise ValueError("Either cfg_path or cfg must be provided")
+        elif cfg_path is not None and cfg is None:
+            cfg_path = pth.Path(cfg_path)
+            with open(cfg_path, "r") as f:
+                cfg = json.load(f)
+
         return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
 
     # ------------------------------------------------------------------
