@@ -245,5 +245,5 @@ if __name__ == "__main__":
         dst_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT2"),
         classifier  = classifier,
         species_dict= SPECIES,
-        overwrite   = False,
+        overwrite   = True,
     )
