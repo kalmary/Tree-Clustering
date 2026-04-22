@@ -10,9 +10,6 @@ from scipy.spatial import Delaunay
 from scipy.spatial import cKDTree
 from tqdm import tqdm
 
-from utils.plot_cloud import plot_cloud
-from pprint import pprint
-
 import gc
 
 from dataclasses import dataclass, field, asdict
@@ -712,6 +709,7 @@ class TreeSegmRay:
 
 def main():
     import laspy
+    from utils import plot_cloud
 
     seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.25,
                       gravity_factor=0.8, ground_label=1,
