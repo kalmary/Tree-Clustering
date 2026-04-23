@@ -226,11 +226,7 @@ if __name__ == "__main__":
         18: ["Other",                  "Inne"],
         19: ["Incorrect segmentation", "Błędna segmentacja"],
     }
-    import os
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
+ 
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     MODEL = "gpt-5.4"
     # from LLM_TreeClassifier import LLM_Classifier
@@ -247,3 +243,7 @@ if __name__ == "__main__":
         species_dict= SPECIES,
         overwrite   = True,
     )
+
+    print(f"Input tokens used: {classifier.prompt_tokens}",
+        f"Cached input tokens: {classifier.cached_tokens}",
+        f"Output tokens used: {classifier.completion_tokens}")
