@@ -116,76 +116,47 @@ class LLM_Classifier:
     VIEW_NAMES = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
 
     def api_call(self, images_base64: list[str]) -> int:
-        """
-        Sends the 5 depth-map views to the model and asks it to pick
-        a species key from self.species. Returns the integer key.
-        """
         assert len(images_base64) == len(self.VIEW_NAMES), (
             f"Expected {len(self.VIEW_NAMES)} views, got {len(images_base64)}"
         )
 
-        # Render the species list once, deterministically ordered
         species_lines = "\n".join(
-            f"  <species key=\"{k}\">{v[0]}</species>"
+            f"  <species key=\"{k}\">{v[1]}</species>"
             for k, v in sorted(self.species.items(), key=lambda kv: kv[0])
         )
-        valid_keys = ", ".join(str(k) for k in sorted(self.species.keys()))
 
         system_prompt = (
             "<role>\n"
-            "You are a dendrologist specialised in tree species identification "
-            "from airborne and terrestrial LiDAR point clouds. You reason about "
-            "3D tree structure from rasterised orthographic depth maps.\n"
-            "</role>\n\n"
-            "<task>\n"
-            "Identify the single best-matching species of one tree, given five "
-            "orthographic depth-map views of its point cloud.\n"
-            "</task>\n\n"
-            "<input_format>\n"
-            "You receive exactly five grayscale depth maps in this fixed order:\n"
-            "  1. TOP    — looking straight down (-Z), shows crown footprint and branch spread.\n"
-            "  2. FRONT  — looking along -Y, shows full silhouette and trunk.\n"
-            "  3. BACK   — looking along +Y, mirror of FRONT.\n"
-            "  4. LEFT   — looking along -X.\n"
-            "  5. RIGHT  — looking along +X, mirror of LEFT.\n"
-            "Brighter pixels are closer to the camera; black is empty space. "
-            "Each view is independently min-max normalised, so absolute brightness "
-            "is not comparable across views — only shape is.\n"
-            "</input_format>\n\n"
+            "You are a dendrologist identifying tree species from 5 orthographic depth maps "
+            "of a LiDAR point cloud (order: TOP, FRONT, BACK, LEFT, RIGHT). Brighter pixels "
+            "are closer; each view is independently min-max normalised, so only shape is "
+            "comparable across views.\n"
+            "</role>\n"
+            "\n"
+            "<first_check>\n"
+            "Before any species analysis, check for multiple trees. Return 19 if the images "
+            "show multiple trees that are far apart or appear to be of different species.\n"
+            "</first_check>\n"
+            "\n"
             "<reasoning_guidelines>\n"
-            "Use ALL five views jointly. Base your decision on structural evidence:\n"
-            "  - Overall silhouette and height-to-width ratio (FRONT/BACK/LEFT/RIGHT).\n"
-            "  - Crown shape: conical, columnar, rounded, spreading, weeping, irregular.\n"
-            "  - Crown footprint and symmetry (TOP).\n"
-            "  - Branching pattern: opposite vs alternate, dense vs sparse, ascending vs horizontal vs drooping.\n"
-            "  - Trunk form: straight single leader vs forked vs leaning; relative trunk thickness.\n"
-            "  - Foliage density and texture as visible in the depth map.\n"
-            "Ignore scanning artefacts, isolated stray points, and ground/understorey returns. "
-            "VALIDATION (PRIORITY 1):\n"
-            "- If multiple trunks are visible in lower half: Return 19\n"
-            "- If tree structure is cut off or heavily missing: Return 19\n"
-            "- If severe non-natural artifacts make identification impossible: Return 19\n\n"
-            "Do NOT infer colour, bark texture, leaf shape, or seasonality — they are not visible. "
-            "If multiple species are plausible, pick the one whose typical 3D form best matches "
-            "the combined evidence across all five views. Never invent a species not in the list.\n"
-            "</reasoning_guidelines>\n\n"
-            "<output_contract>\n"
-            "Respond with EXACTLY ONE integer — the key from the species list — "
-            "and nothing else. No words, no punctuation, no whitespace beyond the digits, "
-            "no markdown, no code fences, no explanation. Any deviation is an error.\n"
-            "</output_contract>"
+            "Judge by silhouette, height-to-width ratio, crown shape and footprint, "
+            "branching pattern, and trunk form. Ignore stray points and ground returns."
+            "Do not infer colour, bark, or leaf shape.\n"
+            "</reasoning_guidelines>\n"
+            "\n"
+            "<validation_rules>\n"
+            "Return 19 if either of these applies: (1) the images show multiple trees that "
+            "are far apart or appear to be of different species, or (2) the data is so "
+            "incomplete or noisy that no tree structure can be recognised at all.\n"
+            "</validation_rules>\n"
+            "\n"
+            "<output_contract>Output exactly one integer: the species key, or 19.</output_contract>"
         )
 
         user_text = (
             "<species_list>\n"
             f"{species_lines}\n"
-            "</species_list>\n\n"
-            f"<valid_keys>{valid_keys}</valid_keys>\n\n"
-            "<instructions>\n"
-            "The five attached images are, in order: TOP, FRONT, BACK, LEFT, RIGHT "
-            "(each labelled in the message). Examine all of them, reason silently about "
-            "the tree's 3D structure, and output the integer key of the best matching species.\n"
-            "</instructions>"
+            "</species_list>"
         )
 
         content = []
@@ -193,7 +164,8 @@ class LLM_Classifier:
             content.append({"type": "input_text", "text": f"View: {name}"})
             content.append({
                 "type": "input_image",
-                "image_url": f"data:image/png;base64,{b64}"
+                "image_url": f"data:image/png;base64,{b64}",
+                "detail": "low"
             })
         content.append({"type": "input_text", "text": user_text})
 
@@ -208,6 +180,8 @@ class LLM_Classifier:
         if hasattr(response, "usage") and response.usage is not None:
             self.prompt_tokens += response.usage.input_tokens or 0
             self.completion_tokens += response.usage.output_tokens or 0
+            details = getattr(response.usage, "input_tokens_details", None)
+            self.cached_tokens += getattr(details, "cached_tokens", 0) or 0
 
         raw = response.output_text.strip()
 
