@@ -1,24 +1,36 @@
+import re
 import torch
 from torchvision import transforms
 import base64
 from io import BytesIO
 from openai import OpenAI
-from typing import Optional
 
 
 class LLM_Classifier:
-    def __init__(self,
-                 resolution: int,
-                 species: dict,
-                 model: str,
-                 API_KEY: Optional[str] = None):
-        
+    
+    VIEW_NAMES = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
+
+    # Stable key so OpenAI routes requests with the same prefix to the same
+    # machine, maximising cache-hit rate. Bump the version suffix whenever
+    # the static prefix (system prompt + species list) changes.
+    PROMPT_CACHE_KEY = "tree-classifier-v5"
+
+    def __init__(self, resolution: int, species: dict,
+                 API_KEY: str | None, model: str,
+                 prompt_cache_retention: str | None = "24h"):
         self.resolution = resolution
         self.species = species
         self.client = OpenAI(api_key=API_KEY) if API_KEY is not None else None
         self.model = model
+        self.prompt_cache_retention = prompt_cache_retention
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.cached_tokens = 0
+
+        # Build the static prefix once. It never changes between calls, so it
+        # can live entirely in the cacheable prefix.
+        self._system_prompt = self._build_system_prompt()
+        self._static_user_prefix = self._build_static_user_prefix()
 
     def _cloud2images(self, points: torch.Tensor,
                        resolution_xy: int | None = None,
@@ -71,14 +83,27 @@ class LLM_Classifier:
                                              reduce='amin', include_self=True)
 
             img = depth_map.view(resolution_xy, resolution_xy)
-            img[img == float('inf')] = 0
 
-            nonzero_mask = img > 0
-            if torch.any(nonzero_mask):
-                values = img[nonzero_mask]
-                min_val = values.min()
-                max_val = values.max()
-                img[nonzero_mask] = (values - min_val) / (max_val - min_val + 1e-8)
+            # Normalise ONLY the valid (non-empty) cells. Using the `inf`
+            # sentinel as the validity mask keeps empty cells distinct from
+            # the farthest real depth until the very end, when we flush
+            # empty cells to black. Brightness is inverted: closest point
+            # to the camera -> near-white (1), farthest valid point ->
+            # near-black (but strictly > 0), truly empty cell -> black (0).
+            valid_mask = torch.isfinite(img)
+            if torch.any(valid_mask):
+                values = img[valid_mask]
+                min_val = values.min()  # closest point
+                max_val = values.max()  # farthest valid point
+                normalised = (max_val - values) / (max_val - min_val + 1e-8)
+                # Keep the darkest valid pixel slightly above 0 so it stays
+                # visually distinguishable from truly empty background.
+                normalised = normalised * (1.0 - 1.0 / 255.0) + (1.0 / 255.0)
+                img = img.clone()
+                img[valid_mask] = normalised
+                img[~valid_mask] = 0.0
+            else:
+                img = torch.zeros_like(img)
 
             return img.type(torch.float32)
 
@@ -112,71 +137,271 @@ class LLM_Classifier:
             images_base64.append(base64.b64encode(images_bytes).decode("utf-8"))
         return images_base64
 
-    # Fixed view order produced by _claude2images
-    VIEW_NAMES = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
+    # ------------------------------------------------------------------
+    # Static prefix construction (cached)
+    # ------------------------------------------------------------------
+    def _build_system_prompt(self) -> str:
+        """
+        Large, fully static system prompt. Goes at the very beginning of the
+        request so it becomes the cacheable prefix. Do not interpolate any
+        per-call data here.
+        """
+        return (
+            "<role>\n"
+            "You are an expert dendrologist and LiDAR-interpretation "
+            "specialist. Your task is to identify a single tree species "
+            "from exactly five orthographic depth maps rendered from a 3D "
+            "LiDAR point cloud of one tree. You will be shown the depth "
+            "maps in a fixed order: TOP, FRONT, BACK, LEFT, RIGHT. Each "
+            "image is preceded by a 'View: <n>' text marker.\n"
+            "</role>\n"
+            "\n"
+            "<input_format>\n"
+            "Each image is an 8-bit GRAYSCALE PNG produced by orthographic "
+            "projection of the LiDAR point cloud onto one plane and a "
+            "per-view min-max normalisation of depth. No colour, no axes, "
+            "no labels, no statistics - just a grayscale image on a black "
+            "background. The grayscale encoding is:\n"
+            "  pure black (0)            : empty space (no LiDAR return)\n"
+            "  very dark gray            : farthest returning points in\n"
+            "                              that view (kept just above 0\n"
+            "                              so they remain distinguishable\n"
+            "                              from true empty background)\n"
+            "  mid gray                  : mid-depth points\n"
+            "  near-white (1)            : closest points to the camera\n"
+            "\n"
+            "In short: closer to the camera -> brighter; empty space is "
+            "solid black.\n"
+            "\n"
+            "Because each view is normalised independently, the absolute "
+            "brightness of a pixel is NOT comparable between views - only "
+            "the spatial distribution of lit pixels and the relative "
+            "brightness gradient within a single view carry information.\n"
+            "\n"
+            "Critical properties of the rendering that you MUST keep in "
+            "mind:\n"
+            "- These are NOT filled silhouettes. Projection happens at "
+            "  pixel resolution so many interior cells stay black simply "
+            "  because no LiDAR point landed there. Interior black "
+            "  speckle inside the overall shape is usually just sampling "
+            "  gaps, NOT real structural voids.\n"
+            "- Brightness varies strongly across a single tree because "
+            "  it encodes depth, not material: the side of the crown "
+            "  facing the camera is light, the far side is dark, and the "
+            "  interior of a thick crown may be completely hidden.\n"
+            "- Point density varies too: crowns tend to look like dense "
+            "  speckled regions, trunks like thin vertical streaks, and "
+            "  occluded regions (upper trunk under a dense crown) may be "
+            "  almost absent.\n"
+            "- The tree's silhouette must be INFERRED from the outer "
+            "  envelope of the lit pixels, not read off as a clean outline.\n"
+            "- Individual lit pixels do not correspond to leaves or "
+            "  branches - they are just surface hits. Do not try to count "
+            "  branches or leaves.\n"
+            "- You will not see any text, titles, stats, or colour in the "
+            "  images. Do not invent any.\n"
+            "\n"
+            "What each view is best for:\n"
+            "- TOP: crown footprint on the ground plane. Judge horizontal "
+            "  extent, crown symmetry, and whether the crown is a single "
+            "  compact region or fragmented into separate clumps. The "
+            "  trunk often appears as a small dense spot near the centre.\n"
+            "- FRONT and BACK: opposing side profiles (rotated 180 degrees). "
+            "  Best for overall silhouette - total height, height-to-width "
+            "  ratio, crown shape (columnar / conical / ovoid / rounded / "
+            "  spreading / weeping / umbrella), trunk visibility, and the "
+            "  height at which the lowest major branches emerge.\n"
+            "- LEFT and RIGHT: the other pair of opposing side profiles, "
+            "  perpendicular to FRONT/BACK. Cross-check against FRONT/BACK "
+            "  to confirm features are genuinely structural rather than "
+            "  artefacts of a single viewing angle.\n"
+            "</input_format>\n"
+            "\n"
+            "<reasoning_guidelines>\n"
+            "Base identification on geometric evidence only. You know the "
+            "morphology of the candidate species; the prompt will NOT "
+            "suggest any particular species. Describe what you see in "
+            "shape terms, then match to whichever species in the list is "
+            "most consistent with that shape.\n"
+            "\n"
+            "Useful geometric features, in rough order of diagnostic "
+            "power:\n"
+            "\n"
+            "1. Overall crown shape, read from the four side views. "
+            "   Categorise into shape families before naming a species: "
+            "   conical with a clear apex, ovoid, broadly rounded, "
+            "   columnar/narrow, spreading-with-short-trunk, "
+            "   weeping/pendulous, umbrella/flat-topped, or "
+            "   irregular/asymmetric. Cross-check the shape family "
+            "   across FRONT, BACK, LEFT, RIGHT - if two perpendicular "
+            "   pairs of views give clearly different shape families, "
+            "   the shape is not reliable and you should lean toward 19 "
+            "   (see validation rules).\n"
+            "\n"
+            "2. Height-to-width aspect ratio estimated from the side "
+            "   views. Very tall-and-narrow, roughly balanced, or "
+            "   wider-than-tall are three distinct regimes that "
+            "   strongly constrain species identity.\n"
+            "\n"
+            "3. Trunk visibility and branching onset. Look at the lower "
+            "   half of the side views: is there a long clean bare "
+            "   trunk before the crown starts, does foliage begin "
+            "   close to the ground, or does the trunk split into "
+            "   multiple stems? These three regimes distinguish "
+            "   forest-grown mature trees from open-grown ones and "
+            "   from multi-stemmed forms.\n"
+            "\n"
+            "4. Crown density and internal structure. Compare how "
+            "   densely packed the lit pixels are inside the crown "
+            "   envelope. A uniformly dense speckled interior suggests "
+            "   a well-foliated crown. A sparse, skeletal crown with "
+            "   lots of internal empty space suggests an open or "
+            "   leafless architecture.\n"
+            "\n"
+            "5. TOP-view footprint shape. Round, elongated, fragmented, "
+            "   or off-centre relative to the trunk position.\n"
+            "\n"
+            "What to IGNORE:\n"
+            "- Individual stray lit pixels clearly detached from the "
+            "  main structure (noise, nearby vegetation, birds).\n"
+            "- Thin horizontal bands of lit pixels at the very bottom "
+            "  of side views - these are ground returns, not part of "
+            "  the tree.\n"
+            "- Isolated speckle in otherwise black regions.\n"
+            "- Apparent bark pattern, leaf shape, or species-specific "
+            "  colour - you cannot see any of these from a grayscale "
+            "  depth projection. Pixel brightness encodes depth only.\n"
+            "\n"
+            "When views disagree on shape family, that is itself a "
+            "signal: either the data is too poor to read reliably "
+            "(lean toward 19) or multiple trees are present (also 19).\n"
+            "</reasoning_guidelines>\n"
+            "\n"
+            "<validation_rules>\n"
+            "Return 19 (segmentation error / unclassifiable) when ANY "
+            "of the following is true. Err on the side of 19 when in "
+            "doubt - a wrong species label is worse than a 19.\n"
+            "\n"
+            "A. Multiple-tree signal. The images show two or more "
+            "   clearly separated tree structures. Concrete signs:\n"
+            "   - TOP view shows two or more distinct dense regions "
+            "     with clear empty space between them (not just one "
+            "     irregular region with internal sampling gaps).\n"
+            "   - Side views show two separate silhouettes side by "
+            "     side with markedly different heights or crown "
+            "     shapes that cannot be explained as one tree viewed "
+            "     obliquely.\n"
+            "   - A tall narrow form and a small low shrub-like clump "
+            "     appear together but are disjoint in all side views.\n"
+            "   A SINGLE tree with a lopsided, irregular, or gap-filled "
+            "   crown is NOT a multi-tree case by itself.\n"
+            "\n"
+            "B. Insufficient structure. The point cloud does not show "
+            "   a coherent tree envelope. Concrete signs:\n"
+            "   - No discernible trunk in any side view (no vertical "
+            "     streak of denser points, no clear main axis).\n"
+            "   - The lit pixels form a flat mat, a scattered blob, or "
+            "     vaguely horizontal vegetation with no clear vertical "
+            "     extent relative to horizontal extent.\n"
+            "   - The side views look like low shrubbery, understory "
+            "     fragments, or ground debris rather than a tree.\n"
+            "   - The height-to-width ratio is roughly 1 or less AND "
+            "     the structure is not clearly a broad spreading "
+            "     crown on a visible trunk.\n"
+            "\n"
+            "C. Shape inconsistency across views. The four side views "
+            "   disagree so strongly about crown shape, height, or "
+            "   outline that no single shape family fits. Genuine "
+            "   trees look similar from FRONT vs BACK (mirror) and "
+            "   broadly similar from LEFT vs RIGHT. If they do not, "
+            "   the segmentation is probably flawed.\n"
+            "\n"
+            "D. Uncertainty rule. If you have identified a coherent "
+            "   single tree but cannot confidently place it into one "
+            "   specific shape family - i.e. you would be guessing "
+            "   between three or more species with roughly equal "
+            "   plausibility - return 19. Do NOT return 19 when you "
+            "   can narrow it to one or two plausible species and "
+            "   pick the better fit; only when you genuinely cannot "
+            "   tell.\n"
+            "</validation_rules>\n"
+            "\n"
+            "<output_contract>\n"
+            "Output exactly one integer and nothing else: either the "
+            "species key from the list, or 19 if any validation rule "
+            "(A, B, C, or D) triggered. No explanation, no punctuation, "
+            "no surrounding text, no code fences, no reasoning. Just "
+            "the integer.\n"
+            "</output_contract>"
+        )
 
+    def _build_static_user_prefix(self) -> str:
+        """
+        Static portion of the user message: the species list. Must come
+        BEFORE any per-call variable content (the images) so it stays in
+        the cacheable prefix.
+        """
+        species_lines = "\n".join(
+            f"  <species key=\"{k}\">{v[1]}</species>"
+            for k, v in sorted(self.species.items(), key=lambda kv: kv[0])
+        )
+        return (
+            "<species_list>\n"
+            "The following are the candidate species. Each line gives the "
+            "integer key you must return if you identify that species. "
+            "Key 19 means segmentation error, multi-tree, or "
+            "unclassifiable data - use it whenever you cannot "
+            "confidently identify a single tree of one specific species.\n"
+            f"{species_lines}\n"
+            "</species_list>\n"
+            "\n"
+            "Five depth maps of a single tree follow below, in the fixed "
+            "order TOP, FRONT, BACK, LEFT, RIGHT. Apply the validation "
+            "rules from the system prompt. When in doubt, return 19.\n"
+            "Output a single integer only."
+        )
+
+    # ------------------------------------------------------------------
+    # API call
+    # ------------------------------------------------------------------
     def api_call(self, images_base64: list[str]) -> int:
         assert len(images_base64) == len(self.VIEW_NAMES), (
             f"Expected {len(self.VIEW_NAMES)} views, got {len(images_base64)}"
         )
 
-        species_lines = "\n".join(
-            f"  <species key=\"{k}\">{v[1]}</species>"
-            for k, v in sorted(self.species.items(), key=lambda kv: kv[0])
-        )
-
-        system_prompt = (
-            "<role>\n"
-            "You are a dendrologist identifying tree species from 5 orthographic depth maps "
-            "of a LiDAR point cloud (order: TOP, FRONT, BACK, LEFT, RIGHT). Brighter pixels "
-            "are closer; each view is independently min-max normalised, so only shape is "
-            "comparable across views.\n"
-            "</role>\n"
-            "\n"
-            "<first_check>\n"
-            "Before any species analysis, check for multiple trees. Return 19 if the images "
-            "show multiple trees that are far apart or appear to be of different species.\n"
-            "</first_check>\n"
-            "\n"
-            "<reasoning_guidelines>\n"
-            "Judge by silhouette, height-to-width ratio, crown shape and footprint, "
-            "branching pattern, and trunk form. Ignore stray points and ground returns."
-            "Do not infer colour, bark, or leaf shape.\n"
-            "</reasoning_guidelines>\n"
-            "\n"
-            "<validation_rules>\n"
-            "Return 19 if either of these applies: (1) the images show multiple trees that "
-            "are far apart or appear to be of different species, or (2) the data is so "
-            "incomplete or noisy that no tree structure can be recognised at all.\n"
-            "</validation_rules>\n"
-            "\n"
-            "<output_contract>Output exactly one integer: the species key, or 19.</output_contract>"
-        )
-
-        user_text = (
-            "<species_list>\n"
-            f"{species_lines}\n"
-            "</species_list>"
-        )
-
-        content = []
+        # IMPORTANT for caching: the user message begins with the fully
+        # static species-list block, and ONLY AFTER that do we append the
+        # per-call variable images. That way the prefix
+        #   [system prompt] + [static user prefix]
+        # is identical across every request and is cacheable.
+        content = [
+            {"type": "input_text", "text": self._static_user_prefix},
+        ]
         for name, b64 in zip(self.VIEW_NAMES, images_base64):
             content.append({"type": "input_text", "text": f"View: {name}"})
             content.append({
                 "type": "input_image",
                 "image_url": f"data:image/png;base64,{b64}",
-                "detail": "low"
+                "detail": "low",  # must stay identical across calls
             })
-        content.append({"type": "input_text", "text": user_text})
 
-        response = self.client.responses.create(
+        request_kwargs = dict(
             model=self.model,
             temperature=0,
             input=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": content},
             ],
+            # Combined with the prefix hash to steer same-prefix traffic to
+            # the same cache bucket. Keeping this stable across calls is
+            # the single most effective thing you can do for hit rate.
+            prompt_cache_key=self.PROMPT_CACHE_KEY,
         )
+        if self.prompt_cache_retention is not None:
+            request_kwargs["prompt_cache_retention"] = self.prompt_cache_retention
+
+        response = self.client.responses.create(**request_kwargs)
+
         if hasattr(response, "usage") and response.usage is not None:
             self.prompt_tokens += response.usage.input_tokens or 0
             self.completion_tokens += response.usage.output_tokens or 0
@@ -185,7 +410,6 @@ class LLM_Classifier:
 
         raw = response.output_text.strip()
 
-        import re
         match = re.search(r"-?\d+", raw)
         if match is None:
             raise ValueError(f"Could not parse species key from model reply: {raw!r}")
