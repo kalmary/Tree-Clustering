@@ -10,9 +10,8 @@ class LLM_Classifier:
     
     VIEW_NAMES = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
 
-    # Stable key so OpenAI routes requests with the same prefix to the same
-    # machine, maximising cache-hit rate. Bump the version suffix whenever
-    # the static prefix (system prompt + species list) changes.
+    # Bump the version suffix whenever the static prefix (system prompt + species list) changes.
+    
     PROMPT_CACHE_KEY = "tree-classifier-v5"
 
     def __init__(self, resolution: int, species: dict,
@@ -27,8 +26,6 @@ class LLM_Classifier:
         self.completion_tokens = 0
         self.cached_tokens = 0
 
-        # Build the static prefix once. It never changes between calls, so it
-        # can live entirely in the cacheable prefix.
         self._system_prompt = self._build_system_prompt()
         self._static_user_prefix = self._build_static_user_prefix()
 
@@ -83,21 +80,13 @@ class LLM_Classifier:
                                              reduce='amin', include_self=True)
 
             img = depth_map.view(resolution_xy, resolution_xy)
-
-            # Normalise ONLY the valid (non-empty) cells. Using the `inf`
-            # sentinel as the validity mask keeps empty cells distinct from
-            # the farthest real depth until the very end, when we flush
-            # empty cells to black. Brightness is inverted: closest point
-            # to the camera -> near-white (1), farthest valid point ->
-            # near-black (but strictly > 0), truly empty cell -> black (0).
             valid_mask = torch.isfinite(img)
+
             if torch.any(valid_mask):
                 values = img[valid_mask]
-                min_val = values.min()  # closest point
-                max_val = values.max()  # farthest valid point
+                min_val = values.min()
+                max_val = values.max()
                 normalised = (max_val - values) / (max_val - min_val + 1e-8)
-                # Keep the darkest valid pixel slightly above 0 so it stays
-                # visually distinguishable from truly empty background.
                 normalised = normalised * (1.0 - 1.0 / 255.0) + (1.0 / 255.0)
                 img = img.clone()
                 img[valid_mask] = normalised
@@ -126,6 +115,7 @@ class LLM_Classifier:
 
     def tensors_to_base64(self, tensor: torch.Tensor) -> list[str]:
         """Convert a (N, H, W) tensor of depth maps into a list of base64 PNG strings."""
+
         images_base64 = []
         to_pil = transforms.ToPILImage()
 
@@ -135,6 +125,7 @@ class LLM_Classifier:
             pil_image.save(buffer, format="PNG")
             images_bytes = buffer.getvalue()
             images_base64.append(base64.b64encode(images_bytes).decode("utf-8"))
+            
         return images_base64
 
     # ------------------------------------------------------------------
@@ -361,19 +352,12 @@ class LLM_Classifier:
             "Output a single integer only."
         )
 
-    # ------------------------------------------------------------------
-    # API call
-    # ------------------------------------------------------------------
+
     def api_call(self, images_base64: list[str]) -> int:
         assert len(images_base64) == len(self.VIEW_NAMES), (
             f"Expected {len(self.VIEW_NAMES)} views, got {len(images_base64)}"
         )
 
-        # IMPORTANT for caching: the user message begins with the fully
-        # static species-list block, and ONLY AFTER that do we append the
-        # per-call variable images. That way the prefix
-        #   [system prompt] + [static user prefix]
-        # is identical across every request and is cacheable.
         content = [
             {"type": "input_text", "text": self._static_user_prefix},
         ]
@@ -392,9 +376,6 @@ class LLM_Classifier:
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": content},
             ],
-            # Combined with the prefix hash to steer same-prefix traffic to
-            # the same cache bucket. Keeping this stable across calls is
-            # the single most effective thing you can do for hit rate.
             prompt_cache_key=self.PROMPT_CACHE_KEY,
         )
         if self.prompt_cache_retention is not None:
