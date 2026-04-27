@@ -280,7 +280,7 @@ class LLM_Classifier:
         the cacheable prefix.
         """
         species_lines = "\n".join(
-            f"  <species key=\"{k}\">{v[1]}</species>"
+            f"  <species key=\"{k}\">{v[0]}</species>"
             for k, v in sorted(self.species.items(), key=lambda kv: kv[0])
         )
         return (
