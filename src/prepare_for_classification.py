@@ -9,7 +9,7 @@ from utils.visualize_trees import save_tree_projections_pdf
 from utils.plot_cloud import plot_cloud
 from array_processing_RE import TreeSegmRay
 
-from GPT_TreeClassifier import LLM_Classifier
+from GPT_TreeClassifier import LLM_Classifier, DummyClassifier
 from tqdm import tqdm
 
 import os
@@ -136,9 +136,9 @@ def main(species_dict: dict = None):
     laz_paths = list(semantic_labelled_dir.glob("*.laz"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    seg = TreeSegmRay(verbose=True)
+    seg = TreeSegmRay.from_config(cfg_path='src/final_files/config_RE.json', verbose=True)
 
-    tree_class_model = LLM_Classifier(resolution=350, species=species_dict)
+    tree_class_model = DummyClassifier()
 
     seg.start_container()
 
@@ -218,26 +218,23 @@ def main(species_dict: dict = None):
 
 if __name__ == "__main__":
     SPECIES = {
-            0:  ["Betula_pendula",         "Brzoza brodawkowata"],
-            1:  ["Fagus_sylvatica",        "Buk zwyczajny"],
-            2:  ["Quercus_petraea",        "Dąb bezszypułkowy"],
-            3:  ["Quercus_rubra",          "Dąb czerwony"],
-            4:  ["Quercus_robur",          "Dąb szypułkowy"],
-            5:  ["Carpinus_betulus",       "Grab pospolity"],
-            6:  ["Fraxinus_excelsior",     "Jesion wyniosły"],
-            7:  ["Acer_pseudoplatanus",    "Klon jawor"],
-            8:  ["Acer_campestre",         "Klon polny"],
-            9:  ["Tilia_cordata",          "Lipa drobnolistna"],
-            10: ["Ulmus_laevis",           "Wiąz szypułkowy"],
-            11: ["Crataegus_monogyna",     "Głóg jednoszyjkowy"],
-            12: ["Corylus_avellana",       "Leszczyna pospolita"],
-            13: ["Pseudotsuga_menziesii",  "Daglezja zielona"],
-            14: ["Abies_alba",             "Jodła pospolita"],
-            15: ["Larix_decidua",          "Modrzew europejski"],
-            16: ["Pinus_sylvestris",       "Sosna zwyczajna"],
-            17: ["Picea_abies",            "Świerk pospolity"],
-            18: ["Other",                  "Inne"],
-            19: ["Incorrect segmentation", "Błędna segmentacja"],
-    }
+        0: ['Pinus', 'sosna'],
+        1: ['Picea', 'świerk'],
+        2: ['Abies', 'jodła'],
+        3: ['Larix', 'modrzew'],
+        4: ['Pseudotsuga', 'daglezja'],
+        5: ['Quercus', 'dąb'],
+        6: ['Ulmus', 'wiąz'],
+        7: ['Fagus', 'buk'],
+        8: ['Tilia', 'lipa'],
+        9: ['Carpinus', 'grab'],
+        10: ['Acer', 'klon'],
+        11: ['Fraxinus', 'jesion'],
+        12: ['Betula', 'brzoza'],
+        13: ['Corylus', 'leszczyna'],
+        14: ['Crataegus', 'głóg'],
+        15: ['Others', 'Inne'],
+        16: ['Incorrect segmentation', 'Błędna segmentacja']
+        }
 
     main(species_dict=SPECIES)

@@ -4,7 +4,11 @@ from torchvision import transforms
 import base64
 from io import BytesIO
 from openai import OpenAI
+import numpy as np
 
+class DummyClassifier:
+    def predict(self, cloud: np.ndarray) -> int:
+        return -1
 
 class LLM_Classifier:
     
@@ -350,6 +354,7 @@ class LLM_Classifier:
         depth_maps = self._cloud2images(points)
         images_b64 = self.tensors_to_base64(depth_maps)
         try:
+            # raise ValueError("Test exception")
             key = self.api_call(images_b64)
         except Exception as e:
             print(f"API call failed: {e}")
