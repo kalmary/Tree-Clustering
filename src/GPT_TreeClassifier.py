@@ -228,7 +228,7 @@ class LLM_Classifier:
                 "</reasoning_guidelines>\n"
                 "\n"
                 "<validation_rules>\n"
-                "Return 19 (segmentation error / unclassifiable) when ANY of "
+                "Return 16 (segmentation error / unclassifiable) when ANY of "
                 "the following is true.\n"
                 "\n"
                 "A. Multiple-tree signal. Two or more clearly separated tree "
@@ -262,7 +262,7 @@ class LLM_Classifier:
                 "\n"
                 "<output_contract>\n"
                 "Output exactly one integer and nothing else: either the "
-                "species key from the list, or 19 if any validation rule "
+                "species key from the list, or 16 if any validation rule "
                 "triggered. No explanation, no punctuation, no surrounding "
                 "text.\n"
                 "</output_contract>"
@@ -281,13 +281,13 @@ class LLM_Classifier:
         return (
             "<species_list>\n"
             "Candidate species. Return the integer key of the "
-            "identified species, or 19 for segmentation error / "
+            "identified species, or 16 for segmentation error / "
             "multi-tree / unclassifiable data.\n"
             f"{species_lines}\n"
             "</species_list>\n"
             "\n"
             "Five depth maps follow (TOP, FRONT, BACK, LEFT, RIGHT). "
-            "Apply the validation rules. When in doubt, return 19."
+            "Apply the validation rules."
         )
 
 
@@ -349,5 +349,9 @@ class LLM_Classifier:
         points = torch.from_numpy(points)
         depth_maps = self._cloud2images(points)
         images_b64 = self.tensors_to_base64(depth_maps)
-        key = self.api_call(images_b64)
+        try:
+            key = self.api_call(images_b64)
+        except Exception as e:
+            print(f"API call failed: {e}")
+            key = 16
         return key

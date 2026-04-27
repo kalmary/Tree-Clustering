@@ -34,6 +34,7 @@ import numpy as np
 import openpyxl
 from openpyxl.styles import Font
 from tqdm import tqdm
+from openpyxl.styles import Font, PatternFill, Alignment
 
 from GPT_TreeClassifier import LLM_Classifier
 
@@ -41,6 +42,29 @@ from GPT_TreeClassifier import LLM_Classifier
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _rewrite_species_sheet(wb: openpyxl.Workbook, species_dict: dict) -> None:
+    sheet_name = "Available labels lookup"
+    if sheet_name in wb.sheetnames:
+        del wb[sheet_name]
+    ws = wb.create_sheet(sheet_name)
+
+    for col, h in enumerate(["Species Code", "Species (Latin)", "Species (Polish)"], 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = Font(name="Arial", bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", start_color="2E7D32")
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, (code, names) in enumerate(species_dict.items(), 2):
+        ws.cell(row=row_idx, column=1, value=code).font = Font(name="Arial")
+        ws.cell(row=row_idx, column=2, value=names[0]).font = Font(name="Arial")
+        ws.cell(row=row_idx, column=3, value=names[1]).font = Font(name="Arial")
+
+    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 28
+    ws.column_dimensions["C"].width = 28
+
 
 def _npy_stem_to_row(ws, stem: str) -> Optional[int]:
     """Return the 1-based row index in *ws* whose column-A value matches *stem*.npy.
@@ -145,6 +169,7 @@ def reclassify_trees(
 
         # ── Load xlsx into memory ────────────────────────────────────────────
         wb = openpyxl.load_workbook(xlsx_src)
+
         ws = wb["Tree Labels"]
         green_font = Font(name="Arial", color="008000")  # verified → green
 
@@ -188,6 +213,7 @@ def reclassify_trees(
                 print(f"    [WARN] No Excel row found for {stem}.npy")
 
         # ── Save updated xlsx ────────────────────────────────────────────────
+        _rewrite_species_sheet(wb, species_dict)
         wb.save(xlsx_dst)
         print(f"  [OK] {batch_src.name} → {xlsx_dst.relative_to(dst_root)}")
 
@@ -205,27 +231,24 @@ if __name__ == "__main__":
     load_dotenv()
 
     SPECIES = {
-        0:  ["Betula_pendula",         "Brzoza brodawkowata"],
-        1:  ["Fagus_sylvatica",        "Buk zwyczajny"],
-        2:  ["Quercus_petraea",        "Dąb bezszypułkowy"],
-        3:  ["Quercus_rubra",          "Dąb czerwony"],
-        4:  ["Quercus_robur",          "Dąb szypułkowy"],
-        5:  ["Carpinus_betulus",       "Grab pospolity"],
-        6:  ["Fraxinus_excelsior",     "Jesion wyniosły"],
-        7:  ["Acer_pseudoplatanus",    "Klon jawor"],
-        8:  ["Acer_campestre",         "Klon polny"],
-        9:  ["Tilia_cordata",          "Lipa drobnolistna"],
-        10: ["Ulmus_laevis",           "Wiąz szypułkowy"],
-        11: ["Crataegus_monogyna",     "Głóg jednoszyjkowy"],
-        12: ["Corylus_avellana",       "Leszczyna pospolita"],
-        13: ["Pseudotsuga_menziesii",  "Daglezja zielona"],
-        14: ["Abies_alba",             "Jodła pospolita"],
-        15: ["Larix_decidua",          "Modrzew europejski"],
-        16: ["Pinus_sylvestris",       "Sosna zwyczajna"],
-        17: ["Picea_abies",            "Świerk pospolity"],
-        18: ["Other",                  "Inne"],
-        19: ["Incorrect segmentation", "Błędna segmentacja"],
-    }
+        0: ['Pinus', 'sosna'],
+        1: ['Picea', 'świerk'],
+        2: ['Abies', 'jodła'],
+        3: ['Larix', 'modrzew'],
+        4: ['Pseudotsuga', 'daglezja'],
+        5: ['Quercus', 'dąb'],
+        6: ['Ulmus', 'wiąz'],
+        7: ['Fagus', 'buk'],
+        8: ['Tilia', 'lipa'],
+        9: ['Carpinus', 'grab'],
+        10: ['Acer', 'klon'],
+        11: ['Fraxinus', 'jesion'],
+        12: ['Betula', 'brzoza'],
+        13: ['Corylus', 'leszczyna'],
+        14: ['Crataegus', 'głóg'],
+        15: ['Others', 'Inne'],
+        16: ['Incorrect segmentation', 'Błędna segmentacja']
+        }       
  
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     MODEL = "gpt-5.4"
@@ -237,8 +260,8 @@ if __name__ == "__main__":
                                 model=MODEL)
 
     reclassify_trees(
-        src_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT"),
-        dst_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT2"),
+        src_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT_TEST"),
+        dst_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT_TEST2"),
         classifier  = classifier,
         species_dict= SPECIES,
         overwrite   = True,
