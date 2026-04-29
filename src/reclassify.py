@@ -37,6 +37,8 @@ from tqdm import tqdm
 from openpyxl.styles import Font, PatternFill, Alignment
 
 from GPT_TreeClassifier import LLM_Classifier
+from fpsample import fps_sampling
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -44,6 +44,8 @@ import numpy as np
 import torch
 from matplotlib.backends.backend_pdf import PdfPages
 from pypdf import PdfReader, PdfWriter
+import fpsample
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -53,6 +55,11 @@ from pypdf import PdfReader, PdfWriter
 def cloud2sideViews_torch(points: torch.Tensor,
                        resolution_xy: int | None = None,
                        margin_ratio: float = 0.05) -> torch.Tensor:
+    n_points = 16384
+    if points.shape[0] < n_points:
+        sampled_idx = fpsample.bucket_fps_kdline_sampling(xyz, n_points, h=7)
+        points = points[sampled_idx]
+    
     points = points.type(torch.float64)
 
     min_xyz = points.min(dim=0).values
