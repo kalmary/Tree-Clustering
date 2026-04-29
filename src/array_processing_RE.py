@@ -10,29 +10,52 @@ from scipy.spatial import Delaunay
 from scipy.spatial import cKDTree
 from tqdm import tqdm
 
-from utils.plot_cloud import plot_cloud
-from pprint import pprint
-
 import gc
+
+from dataclasses import dataclass, field, asdict
+from typing import Optional, Union
+import pathlib as pth
+import json
+
+@dataclass
+class TreeSegmRayConfig:
+    height_min:          float         = 2.0
+    max_diameter:        float         = 0.9
+    crop_length:         float         = 1.0
+    distance_limit:      float         = 0.3
+    girth_height_ratio:  float         = 0.35
+    gravity_factor:      float         = 0.75
+    global_taper:        Optional[float] = None # all below no need to change
+    global_taper_factor: Optional[float] = None
+    grid_width:          Optional[float] = None
+    use_rays:            bool          = False
+    segment_branches:    bool          = False
+    ground_label:        Optional[int] = 1
+    tree_label:          Optional[int] = 7
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 
 
 class TreeSegmRay:
     def __init__(
         self,
-        height_min: float = 2.0,
-        max_diameter: float = 0.9,
-        crop_length: float = 1.0,
-        distance_limit: float = 1.0,
-        girth_height_ratio: float = 0.12,
-        gravity_factor: float = 0.3,
-        global_taper: float = None,
-        global_taper_factor: float = None,
-        grid_width: float = None,
-        use_rays: bool = False,
-        segment_branches: bool = False,
-        ground_label: int = None,
-        tree_label: int = None,
-        verbose: bool = False
+        height_min:          float         = 2.0,
+        max_diameter:        float         = 0.9,
+        crop_length:         float         = 1.0,
+        distance_limit:      float         = 0.3,
+        girth_height_ratio:  float         = 0.12,
+        gravity_factor:      float         = 0.75,
+        global_taper:        Optional[float] = None,
+        global_taper_factor: Optional[float] = None,
+        grid_width:          Optional[float] = None,
+        use_rays:            bool          = False,
+        segment_branches:    bool          = False,
+        ground_label:        Optional[int] = None,
+        tree_label:          Optional[int] = None,
+        verbose:             bool          = False
     ):
         self.verbose             = verbose
         self.height_min          = height_min
@@ -52,6 +75,18 @@ class TreeSegmRay:
         self._container_name = None
         self._shared_tmpdir  = None
         self._backend        = self._detect_backend()
+
+    @classmethod
+    def from_config(cls, cfg_path: Optional[Union[str, pth.Path]] = None, cfg: Optional[dict] = None, verbose: bool = False) -> "TreeSegmRay":
+
+        if cfg_path is None and cfg is None:
+            raise ValueError("Either cfg_path or cfg must be provided")
+        elif cfg_path is not None and cfg is None:
+            cfg_path = pth.Path(cfg_path)
+            with open(cfg_path, "r") as f:
+                cfg = json.load(f)
+
+        return cls(**cfg, verbose=verbose)
 
     # ------------------------------------------------------------------
     # Container management
@@ -503,6 +538,7 @@ class TreeSegmRay:
 
         self.start_container()
 
+
         if labels is not None and self.tree_label is not None and self.ground_label is not None:
             tree_mask   = labels == self.tree_label
             ground_mask = labels == self.ground_label
@@ -593,7 +629,7 @@ class TreeSegmRay:
         return tree_instance_labels
 
     def _segment_big(self, xyz: np.ndarray, labels: np.ndarray,
-                    voxel_size: float = 40.0, overlap: float = 5.0) -> np.ndarray:
+                    voxel_size: float = 55, overlap: float = 5.0) -> np.ndarray:
 
         if labels is not None and self.tree_label is not None and self.ground_label is not None:
             tree_mask = labels == self.tree_label
@@ -658,7 +694,7 @@ class TreeSegmRay:
                 gc.collect()
 
         tree_ids = self._merge_close_trunks(tree_xyz, tree_ids,
-                                            min_trunk_dist=0.3,
+                                            min_trunk_dist=0.2,
                                             trunk_height_band=(0.5, 1.0))
         tree_ids = self._remove_small_clusters(tree_ids, min_points=5000)
         tree_ids = self._reduce_labels(tree_ids)
@@ -666,9 +702,12 @@ class TreeSegmRay:
         return tree_ids
 
     def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        if xyz[labels == self.tree_label].shape[0] > 10 * 1e6:
+
+        if xyz[labels == self.tree_label].shape[0] > 8 * 1e6:
+
             return self._segment_big(xyz, labels)
         else:
+
             return self._segment_small(xyz, labels)
 
 
@@ -678,10 +717,10 @@ class TreeSegmRay:
 
 def main():
     import laspy
+    from utils.plot_cloud import plot_cloud
 
-    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
-                      gravity_factor=0.75, ground_label=1,
-                      tree_label=7, verbose=False)
+    cfg = TreeSegmRayConfig()
+    seg = TreeSegmRay.from_config(cfg=cfg.to_dict(), verbose=True)
 
     for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_CUT/BRIK_Grajewo_21_3_mod.laz"]:
         las    = laspy.read(path)
