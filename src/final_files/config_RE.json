@@ -2,14 +2,14 @@
     "height_min":          2.0,
     "max_diameter":        0.9,
     "crop_length":         1.0,
-    "distance_limit":      1.0,
-    "girth_height_ratio":  0.12,
-    "gravity_factor":      0.3,
+    "distance_limit":      0.3,
+    "girth_height_ratio":  0.35,
+    "gravity_factor":      0.75,
     "global_taper":        null,
     "global_taper_factor": null,
     "grid_width":          null,
     "use_rays":            false,
     "segment_branches":    false,
-    "ground_label":        null,
-    "tree_label":          null
+    "ground_label":        1,
+    "tree_label":          7
 }

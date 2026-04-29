@@ -260,8 +260,8 @@ if __name__ == "__main__":
                                 model=MODEL)
 
     reclassify_trees(
-        src_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT_TEST"),
-        dst_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT_TEST2"),
+        src_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT"),
+        dst_root    = pathlib.Path("/mnt/DATA_SSD/BRIK/GRAJEWO_CUT2"),
         classifier  = classifier,
         species_dict= SPECIES,
         overwrite   = True,
