@@ -4,6 +4,8 @@ import tempfile
 import os
 import uuid
 import struct
+import pathlib as pth
+from typing import Optional, Union
 
 import numpy as np
 from scipy.spatial import Delaunay
@@ -52,6 +54,21 @@ class TreeSegmRay:
         self._container_name = None
         self._shared_tmpdir  = None
         self._backend        = self._detect_backend()
+
+    @classmethod
+    def from_config(cls,
+                    cfg: dict = None,
+                    cfg_path: Optional[Union[str, pth.Path]] = None,
+                    **kwargs):
+        if isinstance(cfg, (str, pth.Path)):
+            cfg_path, cfg = cfg, None
+        if cfg is None and cfg_path is None:
+            raise ValueError("Either cfg or cfg_path must be provided.")
+        if cfg is None:
+            import json
+            with open(cfg_path, 'r') as f:
+                cfg = json.load(f)
+        return cls(**cfg, **kwargs)
 
     # ------------------------------------------------------------------
     # Container management
@@ -679,9 +696,15 @@ class TreeSegmRay:
 def main():
     import laspy
 
-    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
-                      gravity_factor=0.75, ground_label=1,
-                      tree_label=7, verbose=False)
+    # seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
+    #                   gravity_factor=0.75, ground_label=1,
+    #                   tree_label=7, verbose=False)
+
+    seg = TreeSegmRay.from_config("final_files/tree_segm_cfg.json", verbose=True)
+
+    import sys
+    sys.exit()
+
 
     for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_CUT/BRIK_Grajewo_21_3_mod.laz"]:
         las    = laspy.read(path)
