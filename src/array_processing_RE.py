@@ -16,7 +16,9 @@ from pprint import pprint
 import gc
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import Optional, Union
+import pathlib as pth
+import json
 
 @dataclass
 class TreeSegmRayConfig:
@@ -74,8 +76,16 @@ class TreeSegmRay:
         self._backend        = self._detect_backend()
 
     @classmethod
-    def from_config(cls, cfg: dict, verbose: bool = False) -> "TreeSegmRay":
-        return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
+    def from_config(cls, cfg: Optional[dict] = None, cfg_path: Optional[Union[str, pth.Path]] = None, verbose: bool = False) -> "TreeSegmRay":
+        if cfg is not None:
+            return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
+        elif cfg is None and cfg_path is not None:
+            cfg_path = pth.Path(cfg_path)
+            with open(cfg_path, 'r') as f:
+                cfg = json.load(f)
+            return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
+        else:
+            raise ValueError("Either cfg or cfg_path must be provided.")
 
     # ------------------------------------------------------------------
     # Container management
