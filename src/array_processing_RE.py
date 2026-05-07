@@ -4,8 +4,6 @@ import tempfile
 import os
 import uuid
 import struct
-import pathlib as pth
-from typing import Optional, Union
 
 import numpy as np
 from scipy.spatial import Delaunay
@@ -17,24 +15,44 @@ from pprint import pprint
 
 import gc
 
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+
+@dataclass
+class TreeSegmRayConfig:
+    height_min:          float         = 2.0
+    max_diameter:        float         = 0.9
+    crop_length:         float         = 1.0
+    distance_limit:      float         = 0.3
+    girth_height_ratio:  float         = 0.12
+    gravity_factor:      float         = 0.75
+    global_taper:        Optional[float] = None # all below no need to change
+    global_taper_factor: Optional[float] = None
+    grid_width:          Optional[float] = None
+    use_rays:            bool          = False
+    segment_branches:    bool          = False
+    ground_label:        Optional[int] = None
+    tree_label:          Optional[int] = None
+
+
 
 class TreeSegmRay:
     def __init__(
         self,
-        height_min: float = 2.0,
-        max_diameter: float = 0.9,
-        crop_length: float = 1.0,
-        distance_limit: float = 1.0,
-        girth_height_ratio: float = 0.12,
-        gravity_factor: float = 0.3,
-        global_taper: float = None,
-        global_taper_factor: float = None,
-        grid_width: float = None,
-        use_rays: bool = False,
-        segment_branches: bool = False,
-        ground_label: int = None,
-        tree_label: int = None,
-        verbose: bool = False
+        height_min:          float         = 2.0,
+        max_diameter:        float         = 0.9,
+        crop_length:         float         = 1.0,
+        distance_limit:      float         = 0.3,
+        girth_height_ratio:  float         = 0.12,
+        gravity_factor:      float         = 0.75,
+        global_taper:        Optional[float] = None,
+        global_taper_factor: Optional[float] = None,
+        grid_width:          Optional[float] = None,
+        use_rays:            bool          = False,
+        segment_branches:    bool          = False,
+        ground_label:        Optional[int] = None,
+        tree_label:          Optional[int] = None,
+        verbose:             bool          = False
     ):
         self.verbose             = verbose
         self.height_min          = height_min
@@ -56,19 +74,8 @@ class TreeSegmRay:
         self._backend        = self._detect_backend()
 
     @classmethod
-    def from_config(cls,
-                    cfg: dict = None,
-                    cfg_path: Optional[Union[str, pth.Path]] = None,
-                    **kwargs):
-        if isinstance(cfg, (str, pth.Path)):
-            cfg_path, cfg = cfg, None
-        if cfg is None and cfg_path is None:
-            raise ValueError("Either cfg or cfg_path must be provided.")
-        if cfg is None:
-            import json
-            with open(cfg_path, 'r') as f:
-                cfg = json.load(f)
-        return cls(**cfg, **kwargs)
+    def from_config(cls, cfg: dict, verbose: bool = False) -> "TreeSegmRay":
+        return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
 
     # ------------------------------------------------------------------
     # Container management
@@ -696,15 +703,9 @@ class TreeSegmRay:
 def main():
     import laspy
 
-    # seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.3,
-    #                   gravity_factor=0.75, ground_label=1,
-    #                   tree_label=7, verbose=False)
-
-    seg = TreeSegmRay.from_config("final_files/tree_segm_cfg.json", verbose=True)
-
-    import sys
-    sys.exit()
-
+    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.25,
+                      gravity_factor=0.8, ground_label=1,
+                      tree_label=7, verbose=False)
 
     for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_CUT/BRIK_Grajewo_21_3_mod.laz"]:
         las    = laspy.read(path)
