@@ -640,7 +640,9 @@ class TreeSegmRay:
         treeID_offset = 0
 
         tiles = list(self._voxel_tiles(tree_xyz, voxel_size=voxel_size, overlap=overlap))
-        for tile in tqdm(tiles, desc="Voxel tiles", leave=False, position=1):
+        pbar = tiles if self.verbose else tqdm(tiles, desc="Voxel tiles", leave=False, position=1)
+
+        for tile in pbar:
 
             ext_mask  = self._tile_mask(xyz, tile)
             mini_xyz  = xyz[ext_mask]
@@ -717,12 +719,13 @@ def main():
                       gravity_factor=0.8, ground_label=1,
                       tree_label=7, verbose=False)
 
-    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_CUT/BRIK_Grajewo_21_3_mod.laz"]:
+    for path in ["/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/BRIK_Grajewo_2026_6_2_mod_cut.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
 
         tree_xyz    = xyz[labels == seg.tree_label]
+        plot_cloud(tree_xyz)
         tree_labels = seg.segment(xyz, labels)
 
         for tree in np.unique(tree_labels):
