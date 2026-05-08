@@ -20,21 +20,21 @@ from typing import Optional, Union
 import pathlib as pth
 import json
 
-@dataclass
-class TreeSegmRayConfig:
-    height_min:          float         = 2.0
-    max_diameter:        float         = 0.9
-    crop_length:         float         = 1.0
-    distance_limit:      float         = 0.3
-    girth_height_ratio:  float         = 0.12
-    gravity_factor:      float         = 0.75
-    global_taper:        Optional[float] = None # all below no need to change
-    global_taper_factor: Optional[float] = None
-    grid_width:          Optional[float] = None
-    use_rays:            bool          = False
-    segment_branches:    bool          = False
-    ground_label:        Optional[int] = None
-    tree_label:          Optional[int] = None
+# @dataclass
+# class TreeSegmRayConfig:
+#     height_min:          float         = 2.0
+#     max_diameter:        float         = 0.9
+#     crop_length:         float         = 1.0
+#     distance_limit:      float         = 0.3
+#     girth_height_ratio:  float         = 0.12
+#     gravity_factor:      float         = 0.75
+#     global_taper:        Optional[float] = None # all below no need to change
+#     global_taper_factor: Optional[float] = None
+#     grid_width:          Optional[float] = None
+#     use_rays:            bool          = False
+#     segment_branches:    bool          = False
+#     ground_label:        Optional[int] = None
+#     tree_label:          Optional[int] = None
 
 
 
@@ -78,12 +78,12 @@ class TreeSegmRay:
     @classmethod
     def from_config(cls, cfg: Optional[dict] = None, cfg_path: Optional[Union[str, pth.Path]] = None, verbose: bool = False) -> "TreeSegmRay":
         if cfg is not None:
-            return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
+            return cls(**cfg, verbose=verbose)
         elif cfg is None and cfg_path is not None:
             cfg_path = pth.Path(cfg_path)
             with open(cfg_path, 'r') as f:
                 cfg = json.load(f)
-            return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
+            return cls(**cfg, verbose=verbose)
         else:
             raise ValueError("Either cfg or cfg_path must be provided.")
 
@@ -640,7 +640,7 @@ class TreeSegmRay:
         treeID_offset = 0
 
         tiles = list(self._voxel_tiles(tree_xyz, voxel_size=voxel_size, overlap=overlap))
-        pbar = tiles if self.verbose else tqdm(tiles, desc="Voxel tiles", leave=False, position=1)
+        pbar = tqdm(tiles, desc="Voxel tiles", leave=False, position=1) if self.verbose else tiles
 
         for tile in pbar:
 
@@ -702,10 +702,14 @@ class TreeSegmRay:
         return tree_ids
 
     def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        if xyz[labels == self.tree_label].shape[0] > 10 * 1e6:
-            return self._segment_big(xyz, labels)
+        full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
+        tree_mask = labels == self.tree_label
+        if xyz[tree_mask].shape[0] > 10 * 1e6:
+            tree_ids = self._segment_big(xyz, labels)
         else:
-            return self._segment_small(xyz, labels)
+            tree_ids = self._segment_small(xyz, labels)
+        full_tree_ids[tree_mask] = tree_ids
+        return full_tree_ids
 
 
 # ---------------------------------------------------------------------------
@@ -715,25 +719,29 @@ class TreeSegmRay:
 def main():
     import laspy
 
-    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.25,
-                      gravity_factor=0.8, ground_label=1,
-                      tree_label=7, verbose=False)
+    seg = TreeSegmRay(ground_label=1,
+                      tree_label=7, verbose=True)
 
-    for path in ["/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/BRIK_Grajewo_2026_6_2_mod_cut.laz"]:
+    seg = TreeSegmRay.from_config(cfg_path="/home/kalmary/Dokumenty/PROGRAMMING/BRIK-data-processing/src/final_files/config_RE.json", verbose=True)
+
+    for path in ["/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/BRIK_Grajewo_2026_6_2_mod.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
 
         tree_xyz    = xyz[labels == seg.tree_label]
         plot_cloud(tree_xyz)
-        tree_labels = seg.segment(xyz, labels)
+        labels = seg.segment(xyz, labels)
 
-        for tree in np.unique(tree_labels):
-            mask = tree_labels == tree
-            print(f"Tree {tree}: {mask.sum()} points")
-            plot_cloud(tree_xyz[mask], tree_labels[mask])
 
-        plot_cloud(tree_xyz, tree_labels)
+        for tree_label in np.unique(labels):
+            if tree_label == -1:
+                continue
+            fake_labels = np.zeros_like(labels)
+            mask = labels == tree_label
+            fake_labels[mask] = 1
+
+            plot_cloud(xyz, fake_labels)
 
 
 if __name__ == "__main__":
