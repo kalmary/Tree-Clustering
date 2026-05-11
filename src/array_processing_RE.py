@@ -640,7 +640,7 @@ class TreeSegmRay:
         treeID_offset = 0
 
         tiles = list(self._voxel_tiles(tree_xyz, voxel_size=voxel_size, overlap=overlap))
-        pbar = tqdm(tiles, desc="Voxel tiles", leave=False, position=1) if self.verbose else tiles
+        pbar = tqdm(tiles, desc="Voxel tiles - tree clustering", leave=False, position=1) if self.verbose else tiles
 
         for tile in pbar:
 
