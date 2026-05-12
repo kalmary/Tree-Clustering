@@ -704,7 +704,7 @@ class TreeSegmRay:
     def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
         tree_mask = labels == self.tree_label
-        if xyz[tree_mask].shape[0] > 10 * 1e6:
+        if xyz[tree_mask].shape[0] > 7e6:
             tree_ids = self._segment_big(xyz, labels)
         else:
             tree_ids = self._segment_small(xyz, labels)
@@ -722,9 +722,9 @@ def main():
     seg = TreeSegmRay(ground_label=1,
                       tree_label=7, verbose=True)
 
-    seg = TreeSegmRay.from_config(cfg_path="/home/kalmary/Dokumenty/PROGRAMMING/BRIK-data-processing/src/final_files/config_RE.json", verbose=True)
+    seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
 
-    for path in ["/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/BRIK_Grajewo_2026_6_2_mod.laz"]:
+    for path in ["/home/jakub-szota/Pobrane/Brik/processed/BRIK_Grajewo_2026_5_3_mod.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
@@ -741,7 +741,7 @@ def main():
             mask = labels == tree_label
             fake_labels[mask] = 1
 
-            plot_cloud(xyz, fake_labels)
+        plot_cloud(xyz, labels)
 
 
 if __name__ == "__main__":
