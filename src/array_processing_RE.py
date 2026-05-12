@@ -704,7 +704,7 @@ class TreeSegmRay:
     def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
         tree_mask = labels == self.tree_label
-        if xyz[tree_mask].shape[0] > 7e6:
+        if xyz[tree_mask].shape[0] > 10e6:
             tree_ids = self._segment_big(xyz, labels)
         else:
             tree_ids = self._segment_small(xyz, labels)
