@@ -705,7 +705,7 @@ class TreeSegmRay:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
         tree_mask = labels == self.tree_label
         if xyz[tree_mask].shape[0] > 10e6:
-            tree_ids = self._segment_big(xyz, labels)
+            tree_ids = self._segment_big(xyz, labels, voxel_size=60.0, overlap=10.0)
         else:
             tree_ids = self._segment_small(xyz, labels)
         full_tree_ids[tree_mask] = tree_ids
