@@ -205,6 +205,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _write_ground_mesh_ply(ground_xyz: np.ndarray, path: str):
+        if ground_xyz.shape[0] < 3:
+            raise ValueError("Cannot build ground mesh from fewer than 3 points")
+
         tri   = Delaunay(ground_xyz[:, :2])
         verts = ground_xyz.astype(np.float32)
         faces = tri.simplices.astype(np.int32)
@@ -268,6 +271,9 @@ class TreeSegmRay:
                                     ground_z_threshold: float = 0.5,
                                     min_cluster_size: int = 5000,
                                     max_tilt_deg: float = 30.0) -> np.ndarray:
+        if tree_xyz.shape[0] == 0 or ground_xyz.shape[0] == 0 or tree_labels.shape[0] == 0:
+            return tree_labels
+
         ground_z_max  = ground_xyz[:, 2].max()
         unique_labels = np.unique(tree_labels)
 
@@ -333,6 +339,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _estimate_ground(tree_xyz: np.ndarray, grid_size: float = 2.0) -> np.ndarray:
+        if tree_xyz.shape[0] == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+
         xs = tree_xyz[:, 0]
         ys = tree_xyz[:, 1]
         x_bins = np.arange(xs.min(), xs.max() + grid_size, grid_size)
@@ -355,6 +364,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _voxel_tiles(xyz: np.ndarray, voxel_size: float = 50.0, overlap: float = 3.0):
+        if xyz.shape[0] == 0:
+            return
+
         xs, ys = xyz[:, 0], xyz[:, 1]
         x_min, x_max = float(xs.min()), float(xs.max())
         y_min, y_max = float(ys.min()), float(ys.max())
@@ -547,6 +559,9 @@ class TreeSegmRay:
             ground_xyz = None
             tree_mask  = np.ones(len(xyz), dtype=bool)
 
+        if tree_xyz.shape[0] == 0:
+            return np.zeros(0, dtype=np.int64)
+
         if debug:
             if ground_xyz is not None:
                 tqdm.write(f"[debug] Trees: {len(tree_xyz):,} pts  Ground: {len(ground_xyz):,} pts")
@@ -564,6 +579,8 @@ class TreeSegmRay:
             ground_xyz = ground_xyz[unique]
         else:
             ground_xyz = self._estimate_ground(tree_xyz)
+        if ground_xyz.shape[0] < 3:
+            return np.full(tree_xyz.shape[0], -1, dtype=np.int64)
 
         # Each call gets its own subdirectory so concurrent tiles never
         # overwrite each other's cloud.ply / ground.ply inside the container.
@@ -636,6 +653,9 @@ class TreeSegmRay:
             tree_mask = np.ones(len(xyz), dtype=bool)
             tree_xyz  = xyz
 
+        if tree_xyz.shape[0] == 0:
+            return np.zeros(0, dtype=np.int64)
+
         tree_ids      = np.full(len(tree_xyz), -1, dtype=np.int64)
         treeID_offset = 0
 
@@ -703,7 +723,15 @@ class TreeSegmRay:
 
     def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
+        if xyz.shape[0] == 0:
+            return full_tree_ids
+        if xyz.shape[0] != labels.shape[0]:
+            raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
+
         tree_mask = labels == self.tree_label
+        if tree_mask.sum() == 0:
+            return full_tree_ids
+
         if xyz[tree_mask].shape[0] > 10e6:
             tree_ids = self._segment_big(xyz, labels, voxel_size=60.0, overlap=10.0)
         else:
