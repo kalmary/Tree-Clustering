@@ -737,7 +737,7 @@ class TreeSegmRay:
         n_clusters = int(tree_xyz.shape[0] / 5e6)
         n_clusters = max(2, int(n_clusters))
 
-        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.3)
+        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.5)
         tree_xyz_lr = tree_xyz[tree_xyz_lr_mask]
         
         model = Birch(
@@ -746,7 +746,7 @@ class TreeSegmRay:
             n_clusters=n_clusters
         )
 
-        chunk_size = int(5e6)
+        chunk_size = int(2e6)
         pbar = range(0, tree_xyz_lr.shape[0], chunk_size)
         if self.verbose:
             pbar = tqdm(pbar, desc="Coarse clustering fit", leave=False, position=1)
