@@ -741,7 +741,7 @@ class TreeSegmRay:
         tree_xyz_lr = tree_xyz[tree_xyz_lr_mask]
         
         model = Birch(
-            threshold=2.,
+            threshold=3.5,
             branching_factor=128,
             n_clusters=n_clusters
         )
