@@ -726,49 +726,57 @@ class TreeSegmRay:
 
     def _segment_birch(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
         from sklearn.cluster import Birch
-        from sklearn.cluster import MiniBatchKMeans
+
 
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
             return np.full(0, -1, dtype=np.int32)
-
+        
         tree_xyz = xyz[tree_mask]
 
-        n_clusters = tree_xyz.shape[0] // 5e6
+        n_clusters = int(tree_xyz.shape[0] / 5e6)
         n_clusters = max(2, int(n_clusters))
 
-        xyz_mean = tree_xyz.mean(axis=0)
-        tree_xyz_centered = tree_xyz - xyz_mean
-        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz_centered, voxel_size=0.25)
-        tree_xyz_lr = tree_xyz_centered[tree_xyz_lr_mask]
-        tree_xy_lr = tree_xyz_lr[:, :2]
+        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.3)
+        tree_xyz_lr = tree_xyz[tree_xyz_lr_mask]
         
-        model = MiniBatchKMeans( # dont know if Birch aint better
-            n_clusters=n_clusters,
-            batch_size=100_000,
-            n_init="auto",
-            max_iter=100,
-            reassignment_ratio=0.01,
-            random_state=0,
+        model = Birch(
+            threshold=2.,
+            branching_factor=128,
+            n_clusters=n_clusters
         )
+
+        chunk_size = int(5e6)
+        pbar = range(0, tree_xyz_lr.shape[0], chunk_size)
         if self.verbose:
-            with tqdm(total=1, desc="Coarse clustering", leave=False, position=1) as pbar:
-                group_ids_lr = model.fit_predict(tree_xy_lr).astype(np.int32)
-                pbar.update()
-        else:
-            group_ids_lr = model.fit_predict(tree_xy_lr).astype(np.int32)
+            pbar = tqdm(pbar, desc="Coarse clustering fit", leave=False, position=1)
+        for start in pbar:
+            end = min(start + chunk_size, tree_xyz_lr.shape[0])
+            model.partial_fit(tree_xyz_lr[start:end])
+
+        model.partial_fit()
+
+        group_ids_lr = np.empty(tree_xyz_lr.shape[0], dtype=np.int32)
+        pbar = range(0, tree_xyz_lr.shape[0], chunk_size)
+        if self.verbose:
+            pbar = tqdm(pbar, desc="Coarse clustering predict", leave=False, position=1)
+        for start in pbar:
+            end = min(start + chunk_size, tree_xyz_lr.shape[0])
+            group_ids_lr[start:end] = model.predict(tree_xyz_lr[start:end])
+
+        del model
 
         chunk_size = int(2e6)
         kdtree = cKDTree(tree_xyz_lr)
         group_ids = np.empty(tree_xyz.shape[0], dtype=np.int32)
-        pbar = range(0, tree_xyz_centered.shape[0], chunk_size)
+        pbar = range(0, tree_xyz.shape[0], chunk_size)
         if self.verbose:
             pbar = tqdm(pbar, desc="Coarse label upsampling", leave=False, position=1)
         for start in pbar:
-            end = min(start + chunk_size, tree_xyz_centered.shape[0])
-            _, idx = kdtree.query(tree_xyz_centered[start:end], k=1)
+            end = min(start + chunk_size, tree_xyz.shape[0])
+            _, idx = kdtree.query(tree_xyz[start:end], k=1)
             group_ids[start:end] = group_ids_lr[idx]
-        del tree_xyz_centered, tree_xyz_lr, tree_xy_lr, tree_xyz_lr_mask, group_ids_lr, kdtree
+        del tree_xyz_lr, tree_xyz_lr_mask, group_ids_lr, kdtree
         gc.collect()
 
         full_tree_ids = np.full(len(tree_xyz), -1, dtype=np.int32)
@@ -874,13 +882,17 @@ class TreeSegmRay:
             return full_tree_ids
         if xyz.shape[0] != labels.shape[0]:
             raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
-
+        
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
             return full_tree_ids
 
+        xyz -= xyz.mean(axis=0)
+        xyz = xyz.astype(np.float32)
+
+
         if xyz[tree_mask].shape[0] > 1e7: # threshold checked
-            tree_ids = self._segment_birch(xyz, labels)
+            tree_ids = self._segment_birch(xyz.copy(), labels)
             # tree_ids = self._segment_big(xyz, labels)
         else:
             tree_ids = self._segment_small(xyz, labels)
@@ -900,7 +912,7 @@ def main():
 
     seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
 
-    for path in ["/mnt/SSD_EXT4_1TB/DATA/GRAJEWO_MINI_TEST/ITWL_Grajewo20_mini_mod.laz"]:
+    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_TEST/ITWL_Grajewo21_mod.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
@@ -908,7 +920,6 @@ def main():
         tree_xyz    = xyz[labels == seg.tree_label]
 
         print(tree_xyz.shape)
-        plot_cloud(tree_xyz)
         labels = seg.segment(xyz, labels)
 
 
