@@ -887,8 +887,7 @@ class TreeSegmRay:
         if tree_mask.sum() == 0:
             return full_tree_ids
 
-        xyz -= xyz.mean(axis=0)
-        xyz = xyz.astype(np.float32)
+        xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
 
         if xyz[tree_mask].shape[0] > 1e7: # threshold checked
