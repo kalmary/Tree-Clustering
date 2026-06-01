@@ -734,14 +734,14 @@ class TreeSegmRay:
         
         tree_xyz = xyz[tree_mask]
 
-        n_clusters = int(tree_xyz.shape[0] / 5e6)
+        n_clusters = int(tree_xyz.shape[0] / 3e6)
         n_clusters = max(2, int(n_clusters))
 
-        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.5)
+        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.3)
         tree_xyz_lr = tree_xyz[tree_xyz_lr_mask]
         
         model = Birch(
-            threshold=3.5,
+            threshold=2.5,
             branching_factor=128,
             n_clusters=n_clusters
         )
