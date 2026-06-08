@@ -248,8 +248,8 @@ if __name__ == "__main__":
         12: ['Betula', 'brzoza'],
         13: ['Corylus', 'leszczyna'],
         14: ['Crataegus', 'głóg'],
-        15: ['Others', 'Inne'],
-        16: ['Incorrect segmentation', 'Błędna segmentacja']
+        15: ['Incorrect segmentation', 'Błędna segmentacja'],
+        16: ['Others', 'Inne']
         }       
  
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
