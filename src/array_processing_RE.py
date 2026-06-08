@@ -911,14 +911,14 @@ def main():
 
     seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
 
-    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_TEST/ITWL_Grajewo21_mod.laz"]:
+    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_MINI_TEST/ITWL_Grajewo20_mini_mod.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
 
         tree_xyz    = xyz[labels == seg.tree_label]
 
-        print(tree_xyz.shape)
+
         labels = seg.segment(xyz, labels)
 
 
