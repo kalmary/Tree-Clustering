@@ -1,4 +1,3 @@
-![BANNER]()
 # Table of contents
 1. [Overview](#overview)
 2. [Repository Structure](#fstructure)
@@ -60,49 +59,11 @@ git submodule update --init --recursive
 
 ## TreeSegmRay Backend Setup
 
-The `TreeSegmRay` segmentation module requires the **raycloudtools `rayextract trees` algorithm**.  
-The wrapper automatically detects one of the following backends:
 
-- **Native raycloudtools installation**
-- **Docker container**
+The `TreeSegmRay` segmentation module requires the **raycloudtools `rayextract trees` algorithm**.
 
-At least **one of these must be available**.
-
----
-
-### Option 1 — Native Installation (recommended for performance)
-
-Install **raycloudtools** so the `rayextract` binary is available in your system `PATH`.
-
-If the installation is successful, the following command should work:
-
-```bash
-rayextract --help
-```
-
-### Option 2 — Docker Backend (simpler setup)
-
-If `rayextract` is not installed, the wrapper can run it inside Docker.
-
-Install Docker (Ubuntu example):
-
-```bash
-sudo apt install docker.io
-sudo systemctl enable docker
-sudo systemctl start docker
-```
-
-Pull the required container image:
-
-```bash
-docker pull ghcr.io/csiro-robotics/raycloudtools:latest
-```
-
-Verify installation:
-
-```bash
-docker run --rm ghcr.io/csiro-robotics/raycloudtools:latest rayextract --help
-```
+Install it by following the official installation instructions:
+ [https://github.com/csiro-robotics/raycloudtools#install-using-a-pre-built-container](https://github.com/csiro-robotics/raycloudtools#install-using-a-pre-built-container)
 
 When Docker is detected and the image is available, TreeSegmRay will automatically run the algorithm inside the container.
 

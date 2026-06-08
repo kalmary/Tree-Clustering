@@ -20,21 +20,21 @@ from typing import Optional, Union
 import pathlib as pth
 import json
 
-@dataclass
-class TreeSegmRayConfig:
-    height_min:          float         = 2.0
-    max_diameter:        float         = 0.9
-    crop_length:         float         = 1.0
-    distance_limit:      float         = 0.3
-    girth_height_ratio:  float         = 0.12
-    gravity_factor:      float         = 0.75
-    global_taper:        Optional[float] = None # all below no need to change
-    global_taper_factor: Optional[float] = None
-    grid_width:          Optional[float] = None
-    use_rays:            bool          = False
-    segment_branches:    bool          = False
-    ground_label:        Optional[int] = None
-    tree_label:          Optional[int] = None
+# @dataclass
+# class TreeSegmRayConfig:
+#     height_min:          float         = 2.0
+#     max_diameter:        float         = 0.9
+#     crop_length:         float         = 1.0
+#     distance_limit:      float         = 0.3
+#     girth_height_ratio:  float         = 0.12
+#     gravity_factor:      float         = 0.75
+#     global_taper:        Optional[float] = None # all below no need to change
+#     global_taper_factor: Optional[float] = None
+#     grid_width:          Optional[float] = None
+#     use_rays:            bool          = False
+#     segment_branches:    bool          = False
+#     ground_label:        Optional[int] = None
+#     tree_label:          Optional[int] = None
 
 
 
@@ -78,12 +78,12 @@ class TreeSegmRay:
     @classmethod
     def from_config(cls, cfg: Optional[dict] = None, cfg_path: Optional[Union[str, pth.Path]] = None, verbose: bool = False) -> "TreeSegmRay":
         if cfg is not None:
-            return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
+            return cls(**cfg, verbose=verbose)
         elif cfg is None and cfg_path is not None:
             cfg_path = pth.Path(cfg_path)
             with open(cfg_path, 'r') as f:
                 cfg = json.load(f)
-            return cls(TreeSegmRayConfig(**cfg), verbose=verbose)
+            return cls(**cfg, verbose=verbose)
         else:
             raise ValueError("Either cfg or cfg_path must be provided.")
 
@@ -205,6 +205,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _write_ground_mesh_ply(ground_xyz: np.ndarray, path: str):
+        if ground_xyz.shape[0] < 3:
+            raise ValueError("Cannot build ground mesh from fewer than 3 points")
+
         tri   = Delaunay(ground_xyz[:, :2])
         verts = ground_xyz.astype(np.float32)
         faces = tri.simplices.astype(np.int32)
@@ -268,6 +271,9 @@ class TreeSegmRay:
                                     ground_z_threshold: float = 0.5,
                                     min_cluster_size: int = 5000,
                                     max_tilt_deg: float = 30.0) -> np.ndarray:
+        if tree_xyz.shape[0] == 0 or ground_xyz.shape[0] == 0 or tree_labels.shape[0] == 0:
+            return tree_labels
+
         ground_z_max  = ground_xyz[:, 2].max()
         unique_labels = np.unique(tree_labels)
 
@@ -333,6 +339,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _estimate_ground(tree_xyz: np.ndarray, grid_size: float = 2.0) -> np.ndarray:
+        if tree_xyz.shape[0] == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+
         xs = tree_xyz[:, 0]
         ys = tree_xyz[:, 1]
         x_bins = np.arange(xs.min(), xs.max() + grid_size, grid_size)
@@ -355,6 +364,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _voxel_tiles(xyz: np.ndarray, voxel_size: float = 50.0, overlap: float = 3.0):
+        if xyz.shape[0] == 0:
+            return
+
         xs, ys = xyz[:, 0], xyz[:, 1]
         x_min, x_max = float(xs.min()), float(xs.max())
         y_min, y_max = float(ys.min()), float(ys.max())
@@ -537,6 +549,8 @@ class TreeSegmRay:
 
         self.start_container()
 
+        xyz -= xyz.mean(axis=0)  # center for better numerical stability in raycloudtools
+
         if labels is not None and self.tree_label is not None and self.ground_label is not None:
             tree_mask   = labels == self.tree_label
             ground_mask = labels == self.ground_label
@@ -547,23 +561,28 @@ class TreeSegmRay:
             ground_xyz = None
             tree_mask  = np.ones(len(xyz), dtype=bool)
 
+        if tree_xyz.shape[0] == 0:
+            return np.zeros(0, dtype=np.int64)
+
         if debug:
             if ground_xyz is not None:
                 tqdm.write(f"[debug] Trees: {len(tree_xyz):,} pts  Ground: {len(ground_xyz):,} pts")
             else:
                 tqdm.write(f"[debug] Trees: {len(tree_xyz):,} pts  Ground: estimated from lowest points")
 
-        xy_mean          = tree_xyz[:, :2].mean(axis=0)
-        tree_xyz[:, :2] -= xy_mean
+        # xy_mean          = tree_xyz[:, :2].mean(axis=0)
+        # tree_xyz[:, :2] -= xy_mean
 
         if ground_xyz is not None and len(ground_xyz) > 0:
-            ground_xyz[:, :2] -= xy_mean
+            # ground_xyz[:, :2] -= xy_mean
             voxel_size = 1.0
             voxel_idx  = np.floor(ground_xyz / voxel_size).astype(np.int32)
             _, unique  = np.unique(voxel_idx, axis=0, return_index=True)
             ground_xyz = ground_xyz[unique]
         else:
             ground_xyz = self._estimate_ground(tree_xyz)
+        if ground_xyz.shape[0] < 3:
+            return np.full(tree_xyz.shape[0], -1, dtype=np.int64)
 
         # Each call gets its own subdirectory so concurrent tiles never
         # overwrite each other's cloud.ply / ground.ply inside the container.
@@ -636,14 +655,20 @@ class TreeSegmRay:
             tree_mask = np.ones(len(xyz), dtype=bool)
             tree_xyz  = xyz
 
+        if tree_xyz.shape[0] == 0:
+            return np.zeros(0, dtype=np.int64)
+
         tree_ids      = np.full(len(tree_xyz), -1, dtype=np.int64)
         treeID_offset = 0
 
         tiles = list(self._voxel_tiles(tree_xyz, voxel_size=voxel_size, overlap=overlap))
-        for tile in tqdm(tiles, desc="Voxel tiles", leave=False, position=1):
+        pbar = tqdm(tiles, desc="Voxel tiles - tree clustering", leave=False, position=1) if self.verbose else tiles
+
+        for tile in pbar:
 
             ext_mask  = self._tile_mask(xyz, tile)
             mini_xyz  = xyz[ext_mask]
+            print(mini_xyz.shape)
 
             if mini_xyz.shape[0] == 0:
                 continue
@@ -699,11 +724,179 @@ class TreeSegmRay:
 
         return tree_ids
 
+    def _segment_birch(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        from sklearn.cluster import Birch
+
+
+        tree_mask = labels == self.tree_label
+        if tree_mask.sum() == 0:
+            return np.full(0, -1, dtype=np.int32)
+        
+        tree_xyz = xyz[tree_mask]
+
+        n_clusters = int(tree_xyz.shape[0] / 3e6)
+        n_clusters = max(2, int(n_clusters))
+
+        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.3)
+        tree_xyz_lr = tree_xyz[tree_xyz_lr_mask]
+        
+        model = Birch(
+            threshold=2.5,
+            branching_factor=128,
+            n_clusters=n_clusters
+        )
+
+        chunk_size = int(2e6)
+        pbar = range(0, tree_xyz_lr.shape[0], chunk_size)
+        if self.verbose:
+            pbar = tqdm(pbar, desc="Coarse clustering fit", leave=False, position=1)
+        for start in pbar:
+            end = min(start + chunk_size, tree_xyz_lr.shape[0])
+            model.partial_fit(tree_xyz_lr[start:end])
+
+        model.partial_fit()
+
+        group_ids_lr = np.empty(tree_xyz_lr.shape[0], dtype=np.int32)
+        pbar = range(0, tree_xyz_lr.shape[0], chunk_size)
+        if self.verbose:
+            pbar = tqdm(pbar, desc="Coarse clustering predict", leave=False, position=1)
+        for start in pbar:
+            end = min(start + chunk_size, tree_xyz_lr.shape[0])
+            group_ids_lr[start:end] = model.predict(tree_xyz_lr[start:end])
+
+        del model
+
+        chunk_size = int(2e6)
+        kdtree = cKDTree(tree_xyz_lr)
+        group_ids = np.empty(tree_xyz.shape[0], dtype=np.int32)
+        pbar = range(0, tree_xyz.shape[0], chunk_size)
+        if self.verbose:
+            pbar = tqdm(pbar, desc="Coarse label upsampling", leave=False, position=1)
+        for start in pbar:
+            end = min(start + chunk_size, tree_xyz.shape[0])
+            _, idx = kdtree.query(tree_xyz[start:end], k=1)
+            group_ids[start:end] = group_ids_lr[idx]
+        del tree_xyz_lr, tree_xyz_lr_mask, group_ids_lr, kdtree
+        gc.collect()
+
+        full_tree_ids = np.full(len(tree_xyz), -1, dtype=np.int32)
+        tree_indices = np.flatnonzero(tree_mask)
+        tree_id_offset = 0
+
+        group_labels = np.unique(group_ids)
+        pbar = tqdm(group_labels, desc="Fine tree clustering", leave=False, position=1) if self.verbose else group_labels
+        bbox_chunk_size = int(2e6)
+        for group_id in pbar:
+            group_positions = np.flatnonzero(group_ids == group_id)
+            group_tree = tree_xyz[group_positions]
+            if group_tree.shape[0] == 0:
+                continue
+
+            max_xyz, min_xyz = group_tree.max(axis=0), group_tree.min(axis=0)
+            group_index_chunks = []
+            for start in range(0, xyz.shape[0], bbox_chunk_size):
+                end = min(start + bbox_chunk_size, xyz.shape[0])
+                xyz_chunk = xyz[start:end]
+                chunk_mask = (
+                    (xyz_chunk[:, 0] >= min_xyz[0]) & (xyz_chunk[:, 0] <= max_xyz[0]) &
+                    (xyz_chunk[:, 1] >= min_xyz[1]) & (xyz_chunk[:, 1] <= max_xyz[1]) &
+                    (xyz_chunk[:, 2] >= min_xyz[2]) & (xyz_chunk[:, 2] <= max_xyz[2])
+                )
+                if chunk_mask.any():
+                    group_index_chunks.append(np.flatnonzero(chunk_mask) + start)
+            if len(group_index_chunks) == 0:
+                continue
+
+            group_indices = np.concatenate(group_index_chunks)
+            group_voxel = xyz[group_indices]
+            group_voxel_labels = labels[group_indices]
+            group_voxel_tree_mask = group_voxel_labels == self.tree_label
+
+            self.rm_container()
+            try:
+                tree_ids_voxel = self._segment_small(group_voxel, group_voxel_labels)
+            except Exception:
+                max_tree_dim = 3.0
+                group_voxel_tree = group_voxel[group_voxel_tree_mask]
+                xy_extent = np.ptp(group_voxel_tree[:, :2], axis=0)
+                is_single_tree = (xy_extent <= max_tree_dim).all()
+                tree_ids_voxel = (
+                    np.zeros(group_voxel_tree_mask.sum(), dtype=np.int32)
+                    if is_single_tree
+                    else np.full(group_voxel_tree_mask.sum(), -1, dtype=np.int32)
+                )
+
+            group_voxel_tree_indices = group_indices[group_voxel_tree_mask]
+            tree_positions_in_voxel = np.searchsorted(tree_indices, group_voxel_tree_indices)
+            group_tree_mask_in_voxel = group_ids[tree_positions_in_voxel] == group_id
+
+            group_tree_ids = tree_ids_voxel[group_tree_mask_in_voxel].astype(np.int32, copy=True)
+            valid = group_tree_ids >= 0
+            if valid.any():
+                group_tree_ids[valid] += tree_id_offset
+                tree_id_offset = int(group_tree_ids[valid].max()) + 1
+            full_tree_ids[tree_positions_in_voxel[group_tree_mask_in_voxel]] = group_tree_ids
+
+            del group_index_chunks, group_indices, group_voxel, group_voxel_labels, tree_ids_voxel
+            gc.collect()
+
+        full_tree_ids = self._merge_close_trunks(tree_xyz, full_tree_ids,
+                                                 min_trunk_dist=0.3,
+                                                 trunk_height_band=(0.5, 1.0))
+        full_tree_ids = self._remove_small_clusters(full_tree_ids, min_points=5000)
+        full_tree_ids = self._reduce_labels(full_tree_ids)
+
+        return full_tree_ids.astype(np.int32, copy=False)
+
+    @staticmethod
+    def voxel_subsample_vectorized(xyz, voxel_size=0.25):
+        if xyz.shape[0] == 0:
+            return np.zeros(0, dtype=bool)
+
+        keys     = np.floor(xyz / voxel_size).astype(np.int32)
+        centers  = (keys + 0.5) * voxel_size
+        dists_sq = np.sum((xyz - centers) ** 2, axis=1)
+    
+        keys_min  = keys.min(axis=0)
+        keys      = keys - keys_min
+        key_range = keys.max(axis=0) + 1
+    
+        key_range = key_range.astype(np.int64)
+        assert np.prod(key_range) < np.iinfo(np.int64).max, "key encoding overflow"
+        strides = np.cumprod(np.r_[1, key_range[:0:-1]], dtype=np.int64)[::-1]
+        key_enc = keys.astype(np.int64) @ strides
+        
+        order      = np.lexsort((dists_sq, key_enc))
+        key_sorted = key_enc[order]
+        _, first   = np.unique(key_sorted, return_index=True)
+        chosen     = order[first]
+    
+        mask = np.zeros(xyz.shape[0], dtype=bool)
+        mask[chosen] = True
+        return mask
+
+
     def segment(self, xyz: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        if xyz[labels == self.tree_label].shape[0] > 10 * 1e6:
-            return self._segment_big(xyz, labels)
+        full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
+        if xyz.shape[0] == 0:
+            return full_tree_ids
+        if xyz.shape[0] != labels.shape[0]:
+            raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
+        
+        tree_mask = labels == self.tree_label
+        if tree_mask.sum() == 0:
+            return full_tree_ids
+
+        xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
+
+
+        if xyz[tree_mask].shape[0] > 1e7: # threshold checked
+            tree_ids = self._segment_birch(xyz.copy(), labels)
+            # tree_ids = self._segment_big(xyz, labels)
         else:
-            return self._segment_small(xyz, labels)
+            tree_ids = self._segment_small(xyz, labels)
+        full_tree_ids[tree_mask] = tree_ids
+        return full_tree_ids
 
 
 # ---------------------------------------------------------------------------
@@ -713,24 +906,33 @@ class TreeSegmRay:
 def main():
     import laspy
 
-    seg = TreeSegmRay(height_min=1.7, max_diameter=0.3, distance_limit=0.25,
-                      gravity_factor=0.8, ground_label=1,
-                      tree_label=7, verbose=False)
+    seg = TreeSegmRay(ground_label=1,
+                      tree_label=7, verbose=True)
 
-    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_CUT/BRIK_Grajewo_21_3_mod.laz"]:
+    seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
+
+    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_MINI_TEST/ITWL_Grajewo20_mini_mod.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
 
         tree_xyz    = xyz[labels == seg.tree_label]
-        tree_labels = seg.segment(xyz, labels)
 
-        for tree in np.unique(tree_labels):
-            mask = tree_labels == tree
-            print(f"Tree {tree}: {mask.sum()} points")
-            plot_cloud(tree_xyz[mask], tree_labels[mask])
 
-        plot_cloud(tree_xyz, tree_labels)
+        labels = seg.segment(xyz, labels)
+
+
+
+        for tree_label in np.unique(labels):
+            if tree_label == -1:
+                continue
+            fake_labels = np.zeros_like(labels)
+            mask = labels == tree_label
+            fake_labels[mask] = 1
+
+        plot_cloud(xyz, labels)
+        for tree_xyz in [xyz[labels == tree_label] for tree_label in np.unique(labels) if tree_label != -1]:
+            plot_cloud(tree_xyz)
 
 
 if __name__ == "__main__":
