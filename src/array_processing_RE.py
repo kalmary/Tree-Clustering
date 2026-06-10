@@ -911,7 +911,7 @@ def main():
 
     seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
 
-    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_TEST/ITWL_Grajewo21_mod.laz"]:
+    for path in ["/Users/michalsiniarski/Documents/DATA/BRIK/ITWL_Grajewo21_mod.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
