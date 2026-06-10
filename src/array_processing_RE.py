@@ -918,7 +918,7 @@ def main():
 
         tree_xyz    = xyz[labels == seg.tree_label]
 
-        print(tree_xyz.shape)
+
         labels = seg.segment(xyz, labels)
 
 
