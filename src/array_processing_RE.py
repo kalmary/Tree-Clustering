@@ -734,11 +734,13 @@ class TreeSegmRay:
         
         tree_xyz = xyz[tree_mask]
 
-        n_clusters = int(tree_xyz.shape[0] / 3e6)
+        n_clusters = int(tree_xyz.shape[0] / 4e6)
         n_clusters = max(2, int(n_clusters))
 
-        tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.3)
-        tree_xyz_lr = tree_xyz[tree_xyz_lr_mask]
+        with tqdm(desc="Subsampling PCD for coarse tree clusterization", unit="step", total=1, leave=False, position=1, disable=not self.verbose) as pbar:
+            tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.3)
+            tree_xyz_lr = tree_xyz[tree_xyz_lr_mask]
+            pbar.update(1)
         
         model = Birch(
             threshold=2.5,
@@ -911,7 +913,7 @@ def main():
 
     seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
 
-    for path in ["/mnt/DATA_SSD/BRIK/GRAJEWO_MINI_TEST/ITWL_Grajewo20_mini_mod.laz"]:
+    for path in ["/Users/michalsiniarski/Documents/DATA/BRIK/ITWL_Grajewo21_mod.laz"]:
         las    = laspy.read(path)
         xyz    = np.vstack([las.x, las.y, las.z]).T
         labels = np.asarray(las.classification)
