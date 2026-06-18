@@ -930,7 +930,6 @@ def main():
             mask = labels == tree_label
             fake_labels[mask] = 1
 
-        plot_cloud(xyz, labels)
         for tree_xyz in [xyz[labels == tree_label] for tree_label in np.unique(labels) if tree_label != -1]:
             plot_cloud(tree_xyz)
 
