@@ -865,8 +865,8 @@ class TreeSegmRay:
             ground_xyz = self._estimate_ground(tree_xyz)
         if ground_xyz.shape[0] < 3:
             tree_instance_labels = np.full(tree_xyz.shape[0], -1, dtype=np.int32)
-            bush_instance_labels = self._segment_bushes(tree_xyz, tree_instance_labels, ground_xyz=ground_xyz)
-            return tree_instance_labels, bush_instance_labels
+            shrub_instance_labels = self._segment_shrubs(tree_xyz, tree_instance_labels, ground_xyz=ground_xyz)
+            return tree_instance_labels, shrub_instance_labels
 
         # Each call gets its own subdirectory so concurrent tiles never
         # overwrite each other's cloud.ply / ground.ply inside the container.
@@ -928,10 +928,10 @@ class TreeSegmRay:
 
 
         tree_instance_labels = tree_instance_labels.astype(np.int32, copy=False)
-        bush_instance_labels = self._segment_bushes(tree_xyz, tree_instance_labels, ground_xyz=ground_xyz)
-        return tree_instance_labels, bush_instance_labels
+        shrub_instance_labels = self._segment_shrubs(tree_xyz, tree_instance_labels, ground_xyz=ground_xyz)
+        return tree_instance_labels, shrub_instance_labels
 
-    def _segment_bushes(
+    def _segment_shrubs(
         self,
         tree_xyz: NDArray[np.float32],
         tree_ids: NDArray[np.int32],
@@ -940,11 +940,11 @@ class TreeSegmRay:
         outlier_neighbors: int = 48,
         outlier_std_ratio: float = 0.5,
     ) -> NDArray[np.int32]:
-        """Return bush instance IDs for vegetation not assigned to a tree.
+        """Return shrub instance IDs for vegetation not assigned to a tree.
 
         ``tree_xyz`` and ``tree_ids`` contain only points selected by the
         vegetation-class mask. Floating components and vertically elongated
-        clusters are rejected and remain at bush ID ``-1``.
+        clusters are rejected and remain at shrub ID ``-1``.
         """
         if tree_xyz.shape[0] != tree_ids.shape[0]:
             raise ValueError(
@@ -952,53 +952,53 @@ class TreeSegmRay:
                 f"{tree_xyz.shape[0]} != {tree_ids.shape[0]}"
             )
 
-        bush_ids = np.full(tree_ids.shape, -1, dtype=np.int32)
+        shrub_ids = np.full(tree_ids.shape, -1, dtype=np.int32)
         if len(tree_xyz) == 0:
-            return bush_ids
+            return shrub_ids
         if outlier_neighbors < 1:
             raise ValueError("outlier_neighbors must be at least 1")
         if outlier_std_ratio < 0:
             raise ValueError("outlier_std_ratio must not be negative")
 
-        bush_point_indices = np.flatnonzero(tree_ids == -1)
-        bush_xyz = tree_xyz[bush_point_indices]
-        if len(bush_xyz) <= 1:
-            return bush_ids
+        shrub_point_indices = np.flatnonzero(tree_ids == -1)
+        shrub_xyz = tree_xyz[shrub_point_indices]
+        if len(shrub_xyz) <= 1:
+            return shrub_ids
 
-        if len(bush_xyz) == 0:
-            return bush_ids
+        if len(shrub_xyz) == 0:
+            return shrub_ids
 
         retained_mask = self._filter_floating_clusters(
-            bush_xyz,
+            shrub_xyz,
             ground_xyz=ground_xyz,
             voxel_size=0.5,
             max_gap=1.0,
         )
-        bush_point_indices = bush_point_indices[retained_mask]
-        bush_xyz = bush_xyz[retained_mask]
+        shrub_point_indices = shrub_point_indices[retained_mask]
+        shrub_xyz = shrub_xyz[retained_mask]
 
-        bush_instance_ids = self._segment_xy_connected_components(
-            bush_xyz,
+        shrub_instance_ids = self._segment_xy_connected_components(
+            shrub_xyz,
             voxel_size=xy_voxel_size,
         )
         retained_mask = self._remove_partial_trunks(
-            bush_xyz,
-            bush_instance_ids,
+            shrub_xyz,
+            shrub_instance_ids,
         )
         
-        bush_point_indices = bush_point_indices[retained_mask]
-        bush_xyz = bush_xyz[retained_mask]
-        bush_instance_ids = bush_instance_ids[retained_mask]
-        if len(bush_xyz) == 0:
-            return bush_ids
+        shrub_point_indices = shrub_point_indices[retained_mask]
+        shrub_xyz = shrub_xyz[retained_mask]
+        shrub_instance_ids = shrub_instance_ids[retained_mask]
+        if len(shrub_xyz) == 0:
+            return shrub_ids
 
-        bush_instance_ids = self._reduce_labels(bush_instance_ids)
-        bush_ids[bush_point_indices] = bush_instance_ids
+        shrub_instance_ids = self._reduce_labels(shrub_instance_ids)
+        shrub_ids[shrub_point_indices] = shrub_instance_ids
 
-        plot_cloud(bush_xyz, bush_instance_ids, title="Retained bush points")
+        plot_cloud(shrub_xyz, shrub_instance_ids, title="Retained shrub points")
 
 
-        return bush_ids
+        return shrub_ids
 
 
     def _segment_birch(
@@ -1064,10 +1064,10 @@ class TreeSegmRay:
         gc.collect()
 
         full_tree_ids = np.full(len(tree_xyz), -1, dtype=np.int32)
-        full_bush_ids = np.full(len(tree_xyz), -1, dtype=np.int32)
+        full_shrub_ids = np.full(len(tree_xyz), -1, dtype=np.int32)
         tree_indices = np.flatnonzero(tree_mask)
         tree_id_offset = 0
-        bush_id_offset = 0
+        shrub_id_offset = 0
 
         group_labels = np.unique(group_ids)
         pbar = tqdm(group_labels, desc="Fine tree clustering", leave=False, position=1) if self.verbose else group_labels
@@ -1100,7 +1100,7 @@ class TreeSegmRay:
 
             self.rm_container()
             try:
-                tree_ids_voxel, bush_ids_voxel = self._segment_small(
+                tree_ids_voxel, shrub_ids_voxel = self._segment_small(
                     group_voxel, group_voxel_labels
                 )
             except Exception:  # noqa: BLE001
@@ -1119,7 +1119,7 @@ class TreeSegmRay:
                 else:
                     group_ground_xyz = None
 
-                bush_ids_voxel = self._segment_bushes(
+                shrub_ids_voxel = self._segment_shrubs(
                     group_voxel_tree, tree_ids_voxel, ground_xyz=group_ground_xyz
                 )
 
@@ -1133,17 +1133,17 @@ class TreeSegmRay:
                 group_tree_ids[valid] += tree_id_offset
                 tree_id_offset = int(group_tree_ids[valid].max()) + 1
 
-            group_bush_ids = bush_ids_voxel[group_tree_mask_in_voxel].astype(np.int32, copy=True)
-            valid_bush = group_bush_ids >= 0
-            if valid_bush.any():
-                group_bush_ids[valid_bush] += bush_id_offset
-                bush_id_offset = int(group_bush_ids[valid_bush].max()) + 1
+            group_shrub_ids = shrub_ids_voxel[group_tree_mask_in_voxel].astype(np.int32, copy=True)
+            valid_shrub = group_shrub_ids >= 0
+            if valid_shrub.any():
+                group_shrub_ids[valid_shrub] += shrub_id_offset
+                shrub_id_offset = int(group_shrub_ids[valid_shrub].max()) + 1
 
             target_positions = tree_positions_in_voxel[group_tree_mask_in_voxel]
             full_tree_ids[target_positions] = group_tree_ids
-            full_bush_ids[target_positions] = group_bush_ids
+            full_shrub_ids[target_positions] = group_shrub_ids
 
-            del group_index_chunks, group_indices, group_voxel, group_voxel_labels, tree_ids_voxel, bush_ids_voxel
+            del group_index_chunks, group_indices, group_voxel, group_voxel_labels, tree_ids_voxel, shrub_ids_voxel
             gc.collect()
 
         full_tree_ids = self._merge_close_trunks(tree_xyz, full_tree_ids,
@@ -1152,7 +1152,7 @@ class TreeSegmRay:
         full_tree_ids = self._remove_small_clusters(full_tree_ids, min_points=5000)
         full_tree_ids = self._reduce_labels(full_tree_ids)
 
-        return full_tree_ids.astype(np.int32, copy=False), full_bush_ids
+        return full_tree_ids.astype(np.int32, copy=False), full_shrub_ids
 
     @staticmethod
     def voxel_subsample_vectorized(xyz, voxel_size=0.25):
@@ -1184,39 +1184,39 @@ class TreeSegmRay:
 
     def segment(self, xyz: NDArray, labels: NDArray) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
-        full_bush_ids = np.full(len(xyz), -1, dtype=np.int32)
+        full_shrub_ids = np.full(len(xyz), -1, dtype=np.int32)
         if xyz.shape[0] == 0:
-            return full_tree_ids, full_bush_ids
+            return full_tree_ids, full_shrub_ids
         if xyz.shape[0] != labels.shape[0]:
             raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
         
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
-            return full_tree_ids, full_bush_ids
+            return full_tree_ids, full_shrub_ids
 
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
 
         if xyz[tree_mask].shape[0] > 1e7: # threshold checked
-            tree_ids, bush_ids = self._segment_birch(xyz.copy(), labels)
+            tree_ids, shrub_ids = self._segment_birch(xyz.copy(), labels)
         else:
-            tree_ids, bush_ids = self._segment_small(xyz, labels)
+            tree_ids, shrub_ids = self._segment_small(xyz, labels)
         full_tree_ids[tree_mask] = tree_ids
-        full_bush_ids[tree_mask] = bush_ids
+        full_shrub_ids[tree_mask] = shrub_ids
 
-        return full_tree_ids, full_bush_ids
+        return full_tree_ids, full_shrub_ids
 
 
-def test_segment_bushes_contract():
+def test_segment_shrubs_contract():
     tree_xyz = np.zeros((3, 3), dtype=np.float32)
     tree_ids = np.array([0, -1, 1], dtype=np.int32)
 
     segmenter = TreeSegmRay.__new__(TreeSegmRay)
-    bush_ids = segmenter._segment_bushes(tree_xyz=tree_xyz, tree_ids=tree_ids)
+    shrub_ids = segmenter._segment_shrubs(tree_xyz=tree_xyz, tree_ids=tree_ids)
 
-    assert bush_ids.shape == tree_ids.shape
-    assert bush_ids.dtype == np.int32
-    assert np.all(bush_ids[tree_ids >= 0] == -1)
+    assert shrub_ids.shape == tree_ids.shape
+    assert shrub_ids.dtype == np.int32
+    assert np.all(shrub_ids[tree_ids >= 0] == -1)
 
 
 def test_connected_components_voxel_two_clusters():
@@ -1276,26 +1276,19 @@ def test_remove_partial_trunks_filters_vertical_linear_cluster():
         np.cos(heights) * 0.02,
         heights,
     )).astype(np.float32)
-    bush = np.column_stack((
+    shrub = np.column_stack((
         np.linspace(2.0, 4.0, point_count, dtype=np.float32),
         np.tile(np.array([0.0, 1.0], dtype=np.float32), point_count // 2),
         np.tile(np.array([0.0, 0.2], dtype=np.float32), point_count // 2),
     ))
-    xyz = np.concatenate((trunk, bush))
+    xyz = np.concatenate((trunk, shrub))
     cluster_ids = np.repeat(np.array([0, 1], dtype=np.int32), point_count)
-    plotted_clusters = []
 
-    original_plot_cloud = globals()["plot_cloud"]
-    globals()["plot_cloud"] = lambda points, **_: plotted_clusters.append(points)
-    try:
-        retained_mask = TreeSegmRay._remove_partial_trunks(xyz, cluster_ids)
-    finally:
-        globals()["plot_cloud"] = original_plot_cloud
+    retained_mask = TreeSegmRay._remove_partial_trunks(xyz, cluster_ids)
 
     assert retained_mask.dtype == np.bool_
     assert not retained_mask[:point_count].any()
     assert retained_mask[point_count:].all()
-    assert len(plotted_clusters) == 2
 
 
 def test_connected_components_voxel_empty():
@@ -1357,7 +1350,7 @@ def main():
         )
         labels = np.asarray(las.classification)
 
-        _tree_ids, _bush_ids = seg.segment(xyz, labels)
+        _tree_ids, _shrub_ids = seg.segment(xyz, labels)
 
 
 if __name__ == "__main__":

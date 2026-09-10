@@ -1,4 +1,4 @@
-"""Diagnostic visualization for bush-to-ground filtering decisions."""
+"""Diagnostic visualization for shrub-to-ground filtering decisions."""
 
 import numpy as np
 import pyvista as pv
@@ -6,8 +6,8 @@ from numpy.typing import NDArray
 from scipy.spatial import KDTree
 
 
-def plot_bush_diagnostic(
-    bush_xyz: NDArray[np.float32],
+def plot_shrub_diagnostic(
+    shrub_xyz: NDArray[np.float32],
     cluster_labels: NDArray[np.int32],
     min_heights: NDArray[np.float32],
     xy_bounds: NDArray[np.float32],
@@ -21,7 +21,7 @@ def plot_bush_diagnostic(
     if not retained_mask.any():
         return
 
-    retained_xyz = bush_xyz[retained_mask]
+    retained_xyz = shrub_xyz[retained_mask]
     retained_labels = cluster_labels[retained_mask]
     retained_cluster_ids = np.unique(retained_labels)
 
@@ -33,7 +33,7 @@ def plot_bush_diagnostic(
     fallback_ground_level = float(min_heights.min())
     plotter = pv.Plotter()
     plotter.add_title(
-        f"Bush clusters retained after filtering, max gap={max_gap:.2f} m"
+        f"Shrub clusters retained after filtering, max gap={max_gap:.2f} m"
     )
     plotter.add_points(
         retained_xyz,
