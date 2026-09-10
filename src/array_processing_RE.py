@@ -14,6 +14,22 @@ from numpy.typing import NDArray
 from scipy.spatial import Delaunay, KDTree
 from tqdm import tqdm
 
+try:
+    from utils.densify_pcd import densify_pcd
+except ImportError:
+    try:
+        from .utils.densify_pcd import densify_pcd
+    except ImportError:
+        from src.utils.densify_pcd import densify_pcd
+
+try:
+    from utils.plot_cloud import plot_cloud
+except ImportError:
+    try:
+        from .utils.plot_cloud import plot_cloud
+    except ImportError:
+        from src.utils.plot_cloud import plot_cloud
+
 # @dataclass
 # class TreeSegmRayConfig:
 #     height_min:          float         = 2.0
@@ -817,6 +833,7 @@ class TreeSegmRay:
         xyz: NDArray,
         labels: NDArray | None = None,
         debug: bool = False,
+        _postprocess: bool = True,
     ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
 
         self.start_container()
@@ -856,7 +873,7 @@ class TreeSegmRay:
             ground_xyz = self._estimate_ground(tree_xyz)
         if ground_xyz.shape[0] < 3:
             tree_instance_labels = np.full(tree_xyz.shape[0], -1, dtype=np.int32)
-            shrub_instance_labels = self._segment_shrubs(tree_xyz, tree_instance_labels, ground_xyz=ground_xyz)
+            shrub_instance_labels, _, _ = self._segment_shrubs(tree_xyz, tree_instance_labels, ground_xyz=ground_xyz)
             return tree_instance_labels, shrub_instance_labels
 
         # Each call gets its own subdirectory so concurrent tiles never
@@ -919,7 +936,20 @@ class TreeSegmRay:
 
 
         tree_instance_labels = tree_instance_labels.astype(np.int32, copy=False)
-        shrub_instance_labels = self._segment_shrubs(tree_xyz, tree_instance_labels, ground_xyz=ground_xyz)
+        shrub_instance_labels, trunk_point_mask, trunk_cluster_ids = self._segment_shrubs(
+            tree_xyz, tree_instance_labels, ground_xyz=ground_xyz,
+        )
+
+        # --- postprocess: fix detached trunks then split multi-tree clusters --
+        if _postprocess:
+            tree_instance_labels, shrub_instance_labels = self._fix_detached_trunks(
+                tree_xyz, tree_instance_labels, shrub_instance_labels,
+                trunk_point_mask, trunk_cluster_ids, ground_xyz,
+            )
+            tree_instance_labels, shrub_instance_labels = self._fix_multi_tree_clusters(
+                tree_xyz, tree_instance_labels, shrub_instance_labels, ground_xyz,
+            )
+
         return tree_instance_labels, shrub_instance_labels
 
     def _segment_shrubs(
@@ -930,12 +960,16 @@ class TreeSegmRay:
         xy_voxel_size: float = 0.5,
         outlier_neighbors: int = 48,
         outlier_std_ratio: float = 0.5,
-    ) -> NDArray[np.int32]:
+    ) -> tuple[NDArray[np.int32], NDArray[np.bool_], NDArray[np.int32]]:
         """Return shrub instance IDs for vegetation not assigned to a tree.
 
         ``tree_xyz`` and ``tree_ids`` contain only points selected by the
         vegetation-class mask. Floating components and vertically elongated
         clusters are rejected and remain at shrub ID ``-1``.
+
+        Also returns a point-aligned boolean trunk mask and trunk cluster IDs
+        so that detected partial trunks can be reprocessed downstream without
+        repeating the detection.
         """
         if tree_xyz.shape[0] != tree_ids.shape[0]:
             raise ValueError(
@@ -944,8 +978,10 @@ class TreeSegmRay:
             )
 
         shrub_ids = np.full(tree_ids.shape, -1, dtype=np.int32)
+        _empty_trunk_mask = np.zeros(len(tree_ids), dtype=bool)
+        _empty_trunk_ids = np.full(len(tree_ids), -1, dtype=np.int32)
         if len(tree_xyz) == 0:
-            return shrub_ids
+            return shrub_ids, _empty_trunk_mask, _empty_trunk_ids
         if outlier_neighbors < 1:
             raise ValueError("outlier_neighbors must be at least 1")
         if outlier_std_ratio < 0:
@@ -954,10 +990,10 @@ class TreeSegmRay:
         shrub_point_indices = np.flatnonzero(tree_ids == -1)
         shrub_xyz = tree_xyz[shrub_point_indices]
         if len(shrub_xyz) <= 1:
-            return shrub_ids
+            return shrub_ids, _empty_trunk_mask, _empty_trunk_ids
 
         if len(shrub_xyz) == 0:
-            return shrub_ids
+            return shrub_ids, _empty_trunk_mask, _empty_trunk_ids
 
         retained_mask = self._filter_floating_clusters(
             shrub_xyz,
@@ -976,20 +1012,231 @@ class TreeSegmRay:
             shrub_xyz,
             shrub_instance_ids,
         )
-        
+
+        # Capture trunk info before discarding those points
+        trunk_mask_local = ~retained_mask
+        trunk_point_mask = _empty_trunk_mask.copy()
+        trunk_cluster_ids = _empty_trunk_ids.copy()
+        if trunk_mask_local.any():
+            trunk_global_indices = shrub_point_indices[trunk_mask_local]
+            trunk_point_mask[trunk_global_indices] = True
+            trunk_cluster_ids[trunk_global_indices] = shrub_instance_ids[trunk_mask_local]
+
         shrub_point_indices = shrub_point_indices[retained_mask]
         shrub_xyz = shrub_xyz[retained_mask]
         shrub_instance_ids = shrub_instance_ids[retained_mask]
         if len(shrub_xyz) == 0:
-            return shrub_ids
+            return shrub_ids, trunk_point_mask, trunk_cluster_ids
 
         shrub_instance_ids = self._reduce_labels(shrub_instance_ids)
         shrub_ids[shrub_point_indices] = shrub_instance_ids
 
         # plot_cloud(shrub_xyz, shrub_instance_ids, title="Retained shrub points")
 
-        # would be way easier if ud also return mask indicating which points are trunks in given cluster, so there is no need to recompute it. those trunks used to have instance ids, which should also be returned
-        return shrub_ids
+        return shrub_ids, trunk_point_mask, trunk_cluster_ids
+
+    # ------------------------------------------------------------------
+    # Postprocess: fix detached trunks and multi-tree clusters
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_nearby_ground(
+        sub_xyz: NDArray[np.float32],
+        ground_xyz: NDArray[np.float32] | None,
+        margin: float = 5.0,
+    ) -> NDArray[np.float32]:
+        """Return ground points near the XY bounding box of *sub_xyz*."""
+        if ground_xyz is None or len(ground_xyz) == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+        xy_min = sub_xyz[:, :2].min(axis=0) - margin
+        xy_max = sub_xyz[:, :2].max(axis=0) + margin
+        mask = (
+            (ground_xyz[:, 0] >= xy_min[0]) & (ground_xyz[:, 0] <= xy_max[0]) &
+            (ground_xyz[:, 1] >= xy_min[1]) & (ground_xyz[:, 1] <= xy_max[1])
+        )
+        nearby = ground_xyz[mask]
+        return nearby if len(nearby) >= 3 else ground_xyz
+
+    def _fix_detached_trunks(
+        self,
+        tree_xyz: NDArray[np.float32],
+        tree_ids: NDArray[np.int32],
+        shrub_ids: NDArray[np.int32],
+        trunk_point_mask: NDArray[np.bool_],
+        trunk_cluster_ids: NDArray[np.int32],
+        ground_xyz: NDArray[np.float32] | None,
+    ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+        """Reconnect detached trunks with their closest tree clusters.
+
+        Trunks detected by ``_remove_partial_trunks`` inside
+        ``_segment_shrubs`` are merged with the 3 nearest tree clusters,
+        densified, and re-segmented so that the trunk points receive a
+        proper tree ID.
+        """
+        if not trunk_point_mask.any():
+            return tree_ids, shrub_ids
+
+        # XY centres of existing tree clusters (small array)
+        valid_tree_mask = tree_ids >= 0
+        unique_tree_ids = np.unique(tree_ids[valid_tree_mask])
+        if len(unique_tree_ids) == 0:
+            return tree_ids, shrub_ids
+        tree_centers = np.array([
+            tree_xyz[tree_ids == tid, :2].mean(axis=0)
+            for tid in unique_tree_ids
+        ], dtype=np.float64)
+
+        new_tree_ids = tree_ids.copy()
+        new_shrub_ids = shrub_ids.copy()
+        next_id = int(new_tree_ids.max()) + 1
+
+        t_lbl = self.tree_label if self.tree_label is not None else 1
+        g_lbl = self.ground_label if self.ground_label is not None else 2
+
+        for tc_id in np.unique(trunk_cluster_ids[trunk_point_mask]):
+            tc_mask = trunk_cluster_ids == tc_id
+            tc_indices = np.flatnonzero(tc_mask)
+            tc_center = tree_xyz[tc_indices, :2].mean(axis=0)
+
+            # 3 closest tree clusters by XY centroid distance
+            dists = np.linalg.norm(tree_centers - tc_center, axis=1)
+            k = min(3, len(unique_tree_ids))
+            closest_tids = unique_tree_ids[np.argsort(dists)[:k]]
+
+            neighbor_indices = np.concatenate([
+                np.flatnonzero(new_tree_ids == tid) for tid in closest_tids
+            ])
+            all_indices = np.concatenate([tc_indices, neighbor_indices])
+            sub_tree_xyz = tree_xyz[all_indices].astype(np.float32, copy=True)
+
+            # Densify, re-segment, keep only original points
+            densified_xyz, original_mask = densify_pcd(sub_tree_xyz)
+            sub_ground = self._get_nearby_ground(sub_tree_xyz, ground_xyz)
+            if len(sub_ground) < 3:
+                continue
+            combined_xyz = np.concatenate([densified_xyz, sub_ground]).astype(np.float32)
+            combined_labels = np.concatenate([
+                np.full(len(densified_xyz), t_lbl, dtype=np.int32),
+                np.full(len(sub_ground), g_lbl, dtype=np.int32),
+            ])
+            
+            orig_t_lbl, orig_g_lbl = self.tree_label, self.ground_label
+            self.tree_label, self.ground_label = t_lbl, g_lbl
+            sub_tree_ids, sub_shrub_ids = self._segment_small(
+                combined_xyz, combined_labels, _postprocess=False,
+            )
+            self.tree_label, self.ground_label = orig_t_lbl, orig_g_lbl
+
+            orig_tree = sub_tree_ids[original_mask]
+            orig_shrub = sub_shrub_ids[original_mask]
+            valid_sub = orig_tree >= 0
+            if valid_sub.any():
+                orig_tree[valid_sub] += next_id
+                next_id = int(orig_tree[valid_sub].max()) + 1
+            new_tree_ids[all_indices] = orig_tree
+            new_shrub_ids[all_indices] = orig_shrub
+
+        new_tree_ids = self._reduce_labels(new_tree_ids)
+        return new_tree_ids.astype(np.int32, copy=False), new_shrub_ids
+
+    def _fix_multi_tree_clusters(
+        self,
+        tree_xyz: NDArray[np.float32],
+        tree_ids: NDArray[np.int32],
+        shrub_ids: NDArray[np.int32],
+        ground_xyz: NDArray[np.float32] | None,
+        trunk_height_cutoff: float = 1.5,
+        dbscan_eps: float = 0.3,
+        dbscan_min_samples: int = 10,
+    ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+        """Split tree clusters that contain more than one stem.
+
+        For each tree cluster the low-height points are projected onto XY
+        and clustered with DBSCAN. When multiple well-defined clusters
+        appear the tree cluster is merged with its 3 nearest neighbours,
+        densified, and re-segmented.
+        """
+        from sklearn.cluster import DBSCAN
+
+        valid_tree_ids = np.unique(tree_ids[tree_ids >= 0])
+        if len(valid_tree_ids) < 1:
+            return tree_ids, shrub_ids
+
+        tree_centers = np.array([
+            tree_xyz[tree_ids == tid, :2].mean(axis=0)
+            for tid in valid_tree_ids
+        ], dtype=np.float64)
+
+        new_tree_ids = tree_ids.copy()
+        new_shrub_ids = shrub_ids.copy()
+        next_id = int(new_tree_ids.max()) + 1
+
+        t_lbl = self.tree_label if self.tree_label is not None else 1
+        g_lbl = self.ground_label if self.ground_label is not None else 2
+
+        for i, tid in enumerate(valid_tree_ids):
+            cluster_mask = new_tree_ids == tid
+            if cluster_mask.sum() == 0:
+                continue
+            cluster_indices = np.flatnonzero(cluster_mask)
+            cluster_xyz = tree_xyz[cluster_indices]
+
+            # Low-height band
+            z_min = cluster_xyz[:, 2].min()
+            low_mask = cluster_xyz[:, 2] <= z_min + trunk_height_cutoff
+            low_xy = cluster_xyz[low_mask, :2]
+            if len(low_xy) < dbscan_min_samples:
+                continue
+
+            db_labels = DBSCAN(
+                eps=dbscan_eps, min_samples=dbscan_min_samples,
+            ).fit_predict(low_xy)
+            n_clusters = len(set(db_labels) - {-1})
+            if n_clusters <= 1:
+                continue
+
+            # Multiple stems detected — merge with 3 nearest, densify, re-segment
+            dists = np.linalg.norm(tree_centers - tree_centers[i], axis=1)
+            dists[i] = np.inf  # exclude self
+            k = min(3, len(valid_tree_ids) - 1)
+            if k == 0:
+                continue
+            closest_tids = valid_tree_ids[np.argsort(dists)[:k]]
+
+            neighbor_indices = np.concatenate([
+                np.flatnonzero(new_tree_ids == t) for t in closest_tids
+            ])
+            all_indices = np.concatenate([cluster_indices, neighbor_indices])
+            sub_tree_xyz = tree_xyz[all_indices].astype(np.float32, copy=True)
+
+            densified_xyz, original_mask = densify_pcd(sub_tree_xyz)
+            sub_ground = self._get_nearby_ground(sub_tree_xyz, ground_xyz)
+            if len(sub_ground) < 3:
+                continue
+            combined_xyz = np.concatenate([densified_xyz, sub_ground]).astype(np.float32)
+            combined_labels = np.concatenate([
+                np.full(len(densified_xyz), t_lbl, dtype=np.int32),
+                np.full(len(sub_ground), g_lbl, dtype=np.int32),
+            ])
+            
+            orig_t_lbl, orig_g_lbl = self.tree_label, self.ground_label
+            self.tree_label, self.ground_label = t_lbl, g_lbl
+            sub_tree_ids, sub_shrub_ids = self._segment_small(
+                combined_xyz, combined_labels, _postprocess=False,
+            )
+            self.tree_label, self.ground_label = orig_t_lbl, orig_g_lbl
+
+            orig_tree = sub_tree_ids[original_mask]
+            orig_shrub = sub_shrub_ids[original_mask]
+            valid_sub = orig_tree >= 0
+            if valid_sub.any():
+                orig_tree[valid_sub] += next_id
+                next_id = int(orig_tree[valid_sub].max()) + 1
+            new_tree_ids[all_indices] = orig_tree
+            new_shrub_ids[all_indices] = orig_shrub
+
+        new_tree_ids = self._reduce_labels(new_tree_ids)
+        return new_tree_ids.astype(np.int32, copy=False), new_shrub_ids
 
 
     def _postprocess_tree_group(
@@ -1130,7 +1377,7 @@ class TreeSegmRay:
                 else:
                     group_ground_xyz = None
 
-                shrub_ids_voxel = self._segment_shrubs(
+                shrub_ids_voxel, _, _ = self._segment_shrubs(
                     group_voxel_tree, tree_ids_voxel, ground_xyz=group_ground_xyz
                 )
 
@@ -1278,11 +1525,15 @@ def test_segment_shrubs_contract():
     tree_ids = np.array([0, -1, 1], dtype=np.int32)
 
     segmenter = TreeSegmRay.__new__(TreeSegmRay)
-    shrub_ids = segmenter._segment_shrubs(tree_xyz=tree_xyz, tree_ids=tree_ids)
+    shrub_ids, trunk_mask, trunk_ids = segmenter._segment_shrubs(tree_xyz=tree_xyz, tree_ids=tree_ids)
 
     assert shrub_ids.shape == tree_ids.shape
     assert shrub_ids.dtype == np.int32
     assert np.all(shrub_ids[tree_ids >= 0] == -1)
+    assert trunk_mask.shape == tree_ids.shape
+    assert trunk_mask.dtype == np.bool_
+    assert trunk_ids.shape == tree_ids.shape
+    assert trunk_ids.dtype == np.int32
 
 
 def test_postprocess_tree_group_skips_groups_with_shrubs():
@@ -1513,7 +1764,7 @@ def main():
         labels = np.asarray(las.classification)
 
         _merged_instance_ids, _initial_model_species = seg.segment(xyz, labels)
-
+        plot_cloud(xyz, _merged_instance_ids)
 
 if __name__ == "__main__":
     main()
