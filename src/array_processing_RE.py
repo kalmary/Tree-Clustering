@@ -988,7 +988,7 @@ class TreeSegmRay:
 
         # plot_cloud(shrub_xyz, shrub_instance_ids, title="Retained shrub points")
 
-
+        # would be way easier if ud also return mask indicating which points are trunks in given cluster, so there is no need to recompute it. those trunks used to have instance ids, which should also be returned
         return shrub_ids
 
 
