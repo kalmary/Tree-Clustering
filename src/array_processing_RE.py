@@ -11,17 +11,8 @@ from typing import Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.spatial import (
-    Delaunay,
-    KDTree,
-)
+from scipy.spatial import Delaunay, KDTree
 from tqdm import tqdm
-
-try:
-    from .utils.plot_cloud import plot_cloud
-except ImportError:
-    from utils.plot_cloud import plot_cloud
-
 
 # @dataclass
 # class TreeSegmRayConfig:
@@ -995,11 +986,31 @@ class TreeSegmRay:
         shrub_instance_ids = self._reduce_labels(shrub_instance_ids)
         shrub_ids[shrub_point_indices] = shrub_instance_ids
 
-        plot_cloud(shrub_xyz, shrub_instance_ids, title="Retained shrub points")
+        # plot_cloud(shrub_xyz, shrub_instance_ids, title="Retained shrub points")
 
 
         return shrub_ids
 
+
+    def _postprocess_tree_group(
+        self,
+        tree_xyz: NDArray,
+        tree_ids: NDArray[np.int32],
+        shrub_ids: NDArray[np.int32],
+    ) -> NDArray[np.int32]:
+        """Postprocess a Birch group only when it contains no shrubs."""
+        if tree_xyz.shape[0] != tree_ids.shape[0] or tree_ids.shape != shrub_ids.shape:
+            raise ValueError("Tree-group points, tree IDs, and shrub IDs must align")
+        if np.any(shrub_ids >= 0):
+            return tree_ids
+
+        tree_ids = self._merge_close_trunks(
+            tree_xyz,
+            tree_ids,
+            min_trunk_dist=0.3,
+            trunk_height_band=(0.5, 1.0),
+        )
+        return self._remove_small_clusters(tree_ids, min_points=5000)
 
     def _segment_birch(
         self,
@@ -1128,28 +1139,30 @@ class TreeSegmRay:
             group_tree_mask_in_voxel = group_ids[tree_positions_in_voxel] == group_id
 
             group_tree_ids = tree_ids_voxel[group_tree_mask_in_voxel].astype(np.int32, copy=True)
+            group_shrub_ids = shrub_ids_voxel[group_tree_mask_in_voxel].astype(np.int32, copy=True)
+            target_positions = tree_positions_in_voxel[group_tree_mask_in_voxel]
+            group_tree_ids = self._postprocess_tree_group(
+                tree_xyz[target_positions],
+                group_tree_ids,
+                group_shrub_ids,
+            )
+
             valid = group_tree_ids >= 0
             if valid.any():
                 group_tree_ids[valid] += tree_id_offset
                 tree_id_offset = int(group_tree_ids[valid].max()) + 1
 
-            group_shrub_ids = shrub_ids_voxel[group_tree_mask_in_voxel].astype(np.int32, copy=True)
             valid_shrub = group_shrub_ids >= 0
             if valid_shrub.any():
                 group_shrub_ids[valid_shrub] += shrub_id_offset
                 shrub_id_offset = int(group_shrub_ids[valid_shrub].max()) + 1
 
-            target_positions = tree_positions_in_voxel[group_tree_mask_in_voxel]
             full_tree_ids[target_positions] = group_tree_ids
             full_shrub_ids[target_positions] = group_shrub_ids
 
             del group_index_chunks, group_indices, group_voxel, group_voxel_labels, tree_ids_voxel, shrub_ids_voxel
             gc.collect()
 
-        full_tree_ids = self._merge_close_trunks(tree_xyz, full_tree_ids,
-                                                 min_trunk_dist=0.3,
-                                                 trunk_height_band=(0.5, 1.0))
-        full_tree_ids = self._remove_small_clusters(full_tree_ids, min_points=5000)
         full_tree_ids = self._reduce_labels(full_tree_ids)
 
         return full_tree_ids.astype(np.int32, copy=False), full_shrub_ids
@@ -1182,17 +1195,60 @@ class TreeSegmRay:
         return mask
 
 
-    def segment(self, xyz: NDArray, labels: NDArray) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+    @staticmethod
+    def _merge_instance_ids(
+        tree_ids: NDArray,
+        shrub_ids: NDArray,
+    ) -> tuple[NDArray[np.int32], NDArray[np.int8]]:
+        if tree_ids.shape != shrub_ids.shape:
+            raise ValueError(
+                "tree_ids and shrub_ids shape mismatch: "
+                f"{tree_ids.shape} != {shrub_ids.shape}"
+            )
+
+        tree_mask = tree_ids >= 0
+        shrub_mask = shrub_ids >= 0
+        if np.any(tree_mask & shrub_mask):
+            raise ValueError("A point cannot belong to both a tree and a shrub instance")
+
+        int32_max = np.iinfo(np.int32).max
+        merged_instance_ids = np.full(tree_ids.shape, -1, dtype=np.int32)
+        if tree_mask.any():
+            max_tree_id = int(tree_ids[tree_mask].max())
+            if max_tree_id > int32_max:
+                raise OverflowError("Tree instance ID exceeds int32 range")
+            merged_instance_ids[tree_mask] = tree_ids[tree_mask]
+            shrub_offset = max_tree_id + 1
+        else:
+            shrub_offset = 0
+
+        if shrub_mask.any():
+            max_merged_shrub_id = int(shrub_ids[shrub_mask].max()) + shrub_offset
+            if max_merged_shrub_id > int32_max:
+                raise OverflowError("Merged shrub instance ID exceeds int32 range")
+            merged_instance_ids[shrub_mask] = (
+                shrub_ids[shrub_mask].astype(np.int64) + shrub_offset
+            ).astype(np.int32)
+
+        initial_model_species = np.full(tree_ids.shape, -1, dtype=np.int8)
+        initial_model_species[shrub_mask] = 17
+        return merged_instance_ids, initial_model_species
+
+    def segment(
+        self,
+        xyz: NDArray,
+        labels: NDArray,
+    ) -> tuple[NDArray[np.int32], NDArray[np.int8]]:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
         full_shrub_ids = np.full(len(xyz), -1, dtype=np.int32)
         if xyz.shape[0] == 0:
-            return full_tree_ids, full_shrub_ids
+            return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
         if xyz.shape[0] != labels.shape[0]:
             raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
         
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
-            return full_tree_ids, full_shrub_ids
+            return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
 
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
@@ -1204,7 +1260,17 @@ class TreeSegmRay:
         full_tree_ids[tree_mask] = tree_ids
         full_shrub_ids[tree_mask] = shrub_ids
 
-        return full_tree_ids, full_shrub_ids
+        return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
+
+
+def test_merge_instance_ids_offsets_shrubs_after_max_tree_id():
+    tree_ids = np.array([-1, 0, 2, -1, -1, -1], dtype=np.int32)
+    shrub_ids = np.array([-1, -1, -1, 0, 2, -1], dtype=np.int32)
+
+    instance_ids, species = TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
+
+    assert instance_ids.tolist() == [-1, 0, 2, 3, 5, -1]
+    assert species.tolist() == [-1, -1, -1, 17, 17, -1]
 
 
 def test_segment_shrubs_contract():
@@ -1217,6 +1283,102 @@ def test_segment_shrubs_contract():
     assert shrub_ids.shape == tree_ids.shape
     assert shrub_ids.dtype == np.int32
     assert np.all(shrub_ids[tree_ids >= 0] == -1)
+
+
+def test_postprocess_tree_group_skips_groups_with_shrubs():
+    segmenter = TreeSegmRay.__new__(TreeSegmRay)
+    tree_xyz = np.zeros((10, 3), dtype=np.float32)
+    tree_ids = np.array([-1, *([0] * 9)], dtype=np.int32)
+    shrub_ids = np.array([0, *([-1] * 9)], dtype=np.int32)
+
+    mixed_result = segmenter._postprocess_tree_group(
+        tree_xyz,
+        tree_ids.copy(),
+        shrub_ids,
+    )
+    tree_only_result = segmenter._postprocess_tree_group(
+        tree_xyz,
+        np.zeros(10, dtype=np.int32),
+        np.full(10, -1, dtype=np.int32),
+    )
+
+    assert mixed_result.tolist() == tree_ids.tolist()
+    assert np.all(tree_only_result == -1)
+
+
+def test_merge_instance_ids_shrub_only_starts_at_zero():
+    tree_ids = np.array([-1, -1, -1], dtype=np.int32)
+    shrub_ids = np.array([0, 2, -1], dtype=np.int32)
+
+    instance_ids, species = TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
+
+    assert instance_ids.tolist() == [0, 2, -1]
+    assert species.tolist() == [17, 17, -1]
+
+
+def test_merge_instance_ids_rejects_overlap():
+    tree_ids = np.array([0], dtype=np.int32)
+    shrub_ids = np.array([0], dtype=np.int32)
+
+    try:
+        TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
+    except ValueError as exc:
+        assert "both a tree and a shrub" in str(exc)
+    else:
+        raise AssertionError("Expected overlapping instance IDs to be rejected")
+
+
+def test_merge_instance_ids_rejects_shape_mismatch_and_int32_overflow():
+    try:
+        TreeSegmRay._merge_instance_ids(
+            np.array([-1], dtype=np.int32),
+            np.array([-1, -1], dtype=np.int32),
+        )
+    except ValueError as exc:
+        assert "shape mismatch" in str(exc)
+    else:
+        raise AssertionError("Expected mismatched shapes to be rejected")
+
+    try:
+        TreeSegmRay._merge_instance_ids(
+            np.array([np.iinfo(np.int32).max, -1], dtype=np.int64),
+            np.array([-1, 0], dtype=np.int32),
+        )
+    except OverflowError as exc:
+        assert "exceeds int32 range" in str(exc)
+    else:
+        raise AssertionError("Expected an overflowing shrub offset to be rejected")
+
+
+def test_merge_instance_ids_output_dtypes():
+    tree_ids = np.array([0, -1], dtype=np.int64)
+    shrub_ids = np.array([-1, 0], dtype=np.int64)
+
+    instance_ids, species = TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
+
+    assert instance_ids.dtype == np.int32
+    assert species.dtype == np.int8
+
+
+def test_segment_empty_and_no_tree_return_point_aligned_defaults():
+    segmenter = TreeSegmRay.__new__(TreeSegmRay)
+    segmenter.tree_label = 7
+
+    empty_ids, empty_species = segmenter.segment(
+        np.zeros((0, 3), dtype=np.float32),
+        np.zeros(0, dtype=np.int32),
+    )
+    no_tree_ids, no_tree_species = segmenter.segment(
+        np.zeros((3, 3), dtype=np.float32),
+        np.array([1, 2, 3], dtype=np.int32),
+    )
+
+    assert empty_ids.shape == (0,)
+    assert empty_species.shape == (0,)
+    assert no_tree_ids.tolist() == [-1, -1, -1]
+    assert no_tree_species.tolist() == [-1, -1, -1]
+    assert empty_ids.dtype == no_tree_ids.dtype == np.int32
+    assert empty_species.dtype == no_tree_species.dtype == np.int8
 
 
 def test_connected_components_voxel_two_clusters():
@@ -1350,7 +1512,7 @@ def main():
         )
         labels = np.asarray(las.classification)
 
-        _tree_ids, _shrub_ids = seg.segment(xyz, labels)
+        _merged_instance_ids, _initial_model_species = seg.segment(xyz, labels)
 
 
 if __name__ == "__main__":

@@ -181,12 +181,10 @@ def main(species_dict: dict = None):
 
         try:
 
-            tree_labels = seg.segment(pts, cls)
-            tree_xyz    = pts[cls == seg.tree_label]
-
-            valid_mask = tree_labels != -1
-            valid_pts  = tree_xyz[valid_mask]
-            valid_lbls = tree_labels[valid_mask]
+            instance_ids, initial_model_species = seg.segment(pts, cls)
+            tree_mask = (instance_ids >= 0) & (initial_model_species == -1)
+            valid_pts = pts[tree_mask]
+            valid_lbls = instance_ids[tree_mask]
 
             # Returns {tree_id: raw_prediction_str}; appends pages if PDF exists.
             raw_predictions = save_tree_projections_pdf(
