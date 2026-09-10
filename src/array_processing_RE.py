@@ -18,9 +18,9 @@ from scipy.spatial import (
 from tqdm import tqdm
 
 try:
-    from .utils.plot_bush_diagnostic import plot_bush_diagnostic
+    from .utils.plot_cloud import plot_cloud
 except ImportError:
-    from utils.plot_bush_diagnostic import plot_bush_diagnostic
+    from utils.plot_cloud import plot_cloud
 
 
 # @dataclass
@@ -414,27 +414,57 @@ class TreeSegmRay:
         return point_labels, min_heights, xy_bounds
 
     @staticmethod
+    def _segment_xy_connected_components(
+        xyz: NDArray[np.float32],
+        voxel_size: float = 0.5,
+    ) -> NDArray[np.int32]:
+        """Segment points by 8-connected occupied cells in the XY plane."""
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=np.int32)
+        if voxel_size <= 0:
+            raise ValueError("voxel_size must be greater than zero")
+
+        from scipy.ndimage import label as ndimage_label
+
+        point_cells = np.floor(xyz[:, :2] / voxel_size).astype(np.int32)
+        point_cells -= point_cells.min(axis=0)
+        grid_shape = tuple(
+            int(axis_size) for axis_size in point_cells.max(axis=0) + 1
+        )
+        occupied_grid = np.zeros(grid_shape, dtype=bool)
+        occupied_grid[point_cells[:, 0], point_cells[:, 1]] = True
+        labeled_grid, _ = ndimage_label(  # type: ignore[misc]
+            occupied_grid,
+            structure=np.ones((3, 3), dtype=bool),
+        )
+        point_labels = (
+            labeled_grid[point_cells[:, 0], point_cells[:, 1]] - 1
+        ).astype(np.int32)
+        return point_labels
+
+    @classmethod
     def _filter_floating_clusters(
-        point_labels: NDArray[np.int32],
-        min_heights: NDArray[np.float32],
-        xy_bounds: NDArray[np.float32],
+        cls,
+        xyz: NDArray[np.float32],
         ground_xyz: NDArray[np.float32] | None = None,
+        voxel_size: float = 0.5,
         max_gap: float = 0.4,
         boundary_margin: float = 0.5,
         nearest_ground_points: int = 10,
-    ) -> tuple[NDArray[np.int32], NDArray[np.float32]]:
-        """Remove floating clusters and return each cluster's ground gap."""
-        n_clusters = len(min_heights)
-        if n_clusters <= 0:
-            return point_labels.copy(), np.zeros(0, dtype=np.float32)
-        if xy_bounds.shape != (n_clusters, 4):
-            raise ValueError("xy_bounds must have shape (cluster_count, 4)")
+    ) -> NDArray[np.bool_]:
+        """Return a point mask that excludes components floating above ground."""
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=bool)
         if boundary_margin < 0:
             raise ValueError("boundary_margin must not be negative")
         if nearest_ground_points < 1:
             raise ValueError("nearest_ground_points must be at least 1")
 
-        ground_gaps = np.empty(n_clusters, dtype=np.float32)
+        component_labels, min_heights, xy_bounds = cls._connected_components_voxel(
+            xyz,
+            voxel_size=voxel_size,
+        )
+        ground_gaps = np.empty(len(min_heights), dtype=np.float32)
         if ground_xyz is not None and len(ground_xyz) > 0:
             ground_tree = KDTree(ground_xyz[:, :2])
             for cluster_id, bounds in enumerate(xy_bounds):
@@ -463,20 +493,128 @@ class TreeSegmRay:
                     )
                     nearest_indices = np.atleast_1d(nearest_indices)
                     ground_level = float(ground_xyz[nearest_indices, 2].mean())
-                ground_gaps[cluster_id] = (
-                    min_heights[cluster_id] - ground_level
-                )
+                ground_gaps[cluster_id] = min_heights[cluster_id] - ground_level
         else:
             ground_gaps = min_heights - min_heights.min()
 
-        grounded = ground_gaps <= max_gap
+        grounded_components = ground_gaps <= max_gap
+        filtered_component_labels = component_labels.copy()
+        filtered_component_labels[~grounded_components[component_labels]] = -1
+        retained_mask = filtered_component_labels >= 0
 
-        result = point_labels.copy()
-        floating_ids = np.flatnonzero(~grounded)
-        if len(floating_ids) > 0:
-            result[np.isin(point_labels, floating_ids)] = -1
-        return result, ground_gaps
+        return retained_mask
 
+    @staticmethod
+    def _remove_partial_trunks(
+        xyz: NDArray[np.float32],
+        cluster_ids: NDArray[np.int32],
+    ) -> NDArray[np.bool_]:
+        """Diagnose clusters and exclude vertically linear trunk fragments."""
+        if len(xyz) != len(cluster_ids):
+            raise ValueError("xyz and cluster_ids must have the same length")
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=bool)
+        if np.any(cluster_ids < 0):
+            raise ValueError("cluster_ids must not contain negative labels")
+
+        cluster_count = int(cluster_ids.max()) + 1
+        counts = np.bincount(cluster_ids, minlength=cluster_count)
+        eligible_ids = np.flatnonzero(counts >= 100)
+        linearity = np.zeros(cluster_count, dtype=np.float64)
+        z_alignment = np.zeros(cluster_count, dtype=np.float64)
+
+        if len(eligible_ids) > 0:
+            coordinates = xyz - xyz[0]
+            x, y, z = coordinates.T
+            sums = np.column_stack((
+                np.bincount(cluster_ids, weights=x, minlength=cluster_count),
+                np.bincount(cluster_ids, weights=y, minlength=cluster_count),
+                np.bincount(cluster_ids, weights=z, minlength=cluster_count),
+            ))
+            eligible_counts = counts[eligible_ids]
+            means = sums[eligible_ids] / eligible_counts[:, None]
+
+            covariances = np.empty((len(eligible_ids), 3, 3), dtype=np.float64)
+            covariances[:, 0, 0] = (
+                np.bincount(cluster_ids, weights=x * x, minlength=cluster_count)[
+                    eligible_ids
+                ]
+                / eligible_counts
+                - means[:, 0] ** 2
+            )
+            covariances[:, 0, 1] = covariances[:, 1, 0] = (
+                np.bincount(cluster_ids, weights=x * y, minlength=cluster_count)[
+                    eligible_ids
+                ]
+                / eligible_counts
+                - means[:, 0] * means[:, 1]
+            )
+            covariances[:, 0, 2] = covariances[:, 2, 0] = (
+                np.bincount(cluster_ids, weights=x * z, minlength=cluster_count)[
+                    eligible_ids
+                ]
+                / eligible_counts
+                - means[:, 0] * means[:, 2]
+            )
+            covariances[:, 1, 1] = (
+                np.bincount(cluster_ids, weights=y * y, minlength=cluster_count)[
+                    eligible_ids
+                ]
+                / eligible_counts
+                - means[:, 1] ** 2
+            )
+            covariances[:, 1, 2] = covariances[:, 2, 1] = (
+                np.bincount(cluster_ids, weights=y * z, minlength=cluster_count)[
+                    eligible_ids
+                ]
+                / eligible_counts
+                - means[:, 1] * means[:, 2]
+            )
+            covariances[:, 2, 2] = (
+                np.bincount(cluster_ids, weights=z * z, minlength=cluster_count)[
+                    eligible_ids
+                ]
+                / eligible_counts
+                - means[:, 2] ** 2
+            )
+
+            eigenvalues, eigenvectors = np.linalg.eigh(covariances)
+            largest_eigenvalues = np.maximum(eigenvalues[:, 2], 0.0)
+            second_eigenvalues = np.maximum(eigenvalues[:, 1], 0.0)
+            valid_eigenvalues = largest_eigenvalues > 0.0
+            eligible_linearity = np.zeros(len(eligible_ids), dtype=np.float64)
+            eligible_linearity[valid_eigenvalues] = (
+                largest_eigenvalues[valid_eigenvalues]
+                - second_eigenvalues[valid_eigenvalues]
+            ) / largest_eigenvalues[valid_eigenvalues]
+            linearity[eligible_ids] = eligible_linearity
+            z_alignment[eligible_ids] = np.abs(eigenvectors[:, 2, 2])
+
+        is_trunk = (
+            (counts >= 100)
+            & (linearity >= 0.55)
+            & (z_alignment >= 0.70)
+        )
+
+        # point_order = np.argsort(cluster_ids, kind="stable")
+        # ordered_xyz = xyz[point_order]
+        # cluster_ends = np.cumsum(counts)
+        # cluster_starts = cluster_ends - counts
+        # for cluster_id in np.flatnonzero(counts):
+        #     cluster_xyz = ordered_xyz[
+        #         cluster_starts[cluster_id]:cluster_ends[cluster_id]
+        #     ]
+        #     print(
+        #         f"cluster_id: {cluster_id}\n"
+        #         f"point_count: {counts[cluster_id]}\n"
+        #         f"linearity: {linearity[cluster_id]:.6g}\n"
+        #         "principal_axis_z_alignment: "
+        #         f"{z_alignment[cluster_id]:.6g}\n"
+        #         f"is_trunk: {is_trunk[cluster_id]}"
+        #     )
+        #     plot_cloud(cluster_xyz, title=f"Cluster {cluster_id}")
+
+        return ~is_trunk[cluster_ids]
 
     @staticmethod
     def _estimate_ground(tree_xyz: NDArray, grid_size: float = 2.0) -> NDArray:
@@ -798,16 +936,15 @@ class TreeSegmRay:
         tree_xyz: NDArray[np.float32],
         tree_ids: NDArray[np.int32],
         ground_xyz: NDArray[np.float32] | None = None,
+        xy_voxel_size: float = 0.5,
         outlier_neighbors: int = 48,
         outlier_std_ratio: float = 0.5,
     ) -> NDArray[np.int32]:
         """Return bush instance IDs for vegetation not assigned to a tree.
 
         ``tree_xyz`` and ``tree_ids`` contain only points selected by the
-        vegetation-class mask. Points above ``max_bush_height`` and statistical
-        outliers are rejected before segmentation and are not bushes. Future
-        bush segmentation must assign IDs only to the surviving candidates and
-        leave rejected vegetation and existing tree instances at ``-1``.
+        vegetation-class mask. Floating components and vertically elongated
+        clusters are rejected and remain at bush ID ``-1``.
         """
         if tree_xyz.shape[0] != tree_ids.shape[0]:
             raise ValueError(
@@ -828,62 +965,38 @@ class TreeSegmRay:
         if len(bush_xyz) <= 1:
             return bush_ids
 
-
-        # neighbor_count = min(outlier_neighbors + 1, len(bush_xyz))
-        # neighbor_distances, _ = KDTree(bush_xyz).query(
-        #     bush_xyz,
-        #     k=neighbor_count,
-        # )
-        # mean_neighbor_distances = neighbor_distances[:, 1:].mean(axis=1)
-        # distance_limit = (
-        #     mean_neighbor_distances.mean()
-        #     + outlier_std_ratio * mean_neighbor_distances.std()
-        # )
-        # inlier_mask = mean_neighbor_distances <= distance_limit
-        # bush_point_indices = bush_point_indices[inlier_mask]
-        # bush_xyz = bush_xyz[inlier_mask]
-
         if len(bush_xyz) == 0:
             return bush_ids
 
-        cc_labels, min_heights, xy_bounds = self._connected_components_voxel(
+        retained_mask = self._filter_floating_clusters(
             bush_xyz,
+            ground_xyz=ground_xyz,
             voxel_size=0.5,
+            max_gap=1.0,
         )
+        bush_point_indices = bush_point_indices[retained_mask]
+        bush_xyz = bush_xyz[retained_mask]
 
-        cc_labels, ground_gaps = self._filter_floating_clusters(
-            cc_labels,
-            min_heights,
-            xy_bounds,
-            ground_xyz=ground_xyz,
-            max_gap=0.8,
-        )
-        retained_cluster_ids = np.unique(cc_labels[cc_labels >= 0])
-        if len(retained_cluster_ids) > 0:
-            retained_ground_gaps = ground_gaps[retained_cluster_ids]
-            print(
-                "ground gaps",
-                retained_ground_gaps.max(),
-                retained_ground_gaps.min(),
-                retained_ground_gaps.mean(),
-            )
-            
-        plot_bush_diagnostic(
+        bush_instance_ids = self._segment_xy_connected_components(
             bush_xyz,
-            cc_labels,
-            min_heights,
-            xy_bounds,
-            ground_xyz=ground_xyz,
+            voxel_size=xy_voxel_size,
         )
+        retained_mask = self._remove_partial_trunks(
+            bush_xyz,
+            bush_instance_ids,
+        )
+        
+        bush_point_indices = bush_point_indices[retained_mask]
+        bush_xyz = bush_xyz[retained_mask]
+        bush_instance_ids = bush_instance_ids[retained_mask]
+        if len(bush_xyz) == 0:
+            return bush_ids
 
-        cc_labels = self._reduce_labels(cc_labels)
-        bush_ids[bush_point_indices] = cc_labels
+        bush_instance_ids = self._reduce_labels(bush_instance_ids)
+        bush_ids[bush_point_indices] = bush_instance_ids
 
-        # Next step:
-        # - instance-segment only the filtered bush_xyz candidate array;
-        # - write its local instance IDs to bush_ids[bush_point_indices];
-        # - do not assign bush IDs to height-filtered or statistical-outlier
-        #   points; they remain -1 together with existing tree instances.
+        plot_cloud(bush_xyz, bush_instance_ids, title="Retained bush points")
+
 
         return bush_ids
 
@@ -1140,6 +1253,51 @@ def test_connected_components_voxel_two_clusters():
     )
 
 
+def test_segment_xy_connected_components_ignores_height():
+    xyz = np.array([
+        [0.1, 0.1, 0.0],
+        [0.6, 0.6, 10.0],
+        [3.0, 3.0, 0.0],
+    ], dtype=np.float32)
+
+    labels = TreeSegmRay._segment_xy_connected_components(
+        xyz,
+        voxel_size=0.5,
+    )
+
+    assert labels.tolist() == [0, 0, 1]
+
+
+def test_remove_partial_trunks_filters_vertical_linear_cluster():
+    point_count = 120
+    heights = np.linspace(0.0, 1.0, point_count, dtype=np.float32)
+    trunk = np.column_stack((
+        np.sin(heights) * 0.02,
+        np.cos(heights) * 0.02,
+        heights,
+    )).astype(np.float32)
+    bush = np.column_stack((
+        np.linspace(2.0, 4.0, point_count, dtype=np.float32),
+        np.tile(np.array([0.0, 1.0], dtype=np.float32), point_count // 2),
+        np.tile(np.array([0.0, 0.2], dtype=np.float32), point_count // 2),
+    ))
+    xyz = np.concatenate((trunk, bush))
+    cluster_ids = np.repeat(np.array([0, 1], dtype=np.int32), point_count)
+    plotted_clusters = []
+
+    original_plot_cloud = globals()["plot_cloud"]
+    globals()["plot_cloud"] = lambda points, **_: plotted_clusters.append(points)
+    try:
+        retained_mask = TreeSegmRay._remove_partial_trunks(xyz, cluster_ids)
+    finally:
+        globals()["plot_cloud"] = original_plot_cloud
+
+    assert retained_mask.dtype == np.bool_
+    assert not retained_mask[:point_count].any()
+    assert retained_mask[point_count:].all()
+    assert len(plotted_clusters) == 2
+
+
 def test_connected_components_voxel_empty():
     labels, min_h, xy_bounds = TreeSegmRay._connected_components_voxel(
         np.zeros((0, 3), dtype=np.float32),
@@ -1150,11 +1308,9 @@ def test_connected_components_voxel_empty():
 
 
 def test_filter_floating_clusters_uses_bounds_and_nearest_ground_mean():
-    labels = np.array([0, 1], dtype=np.int32)
-    min_heights = np.array([0.5, 3.0], dtype=np.float32)
-    xy_bounds = np.array([
-        [-0.1, -0.1, 0.1, 0.1],
-        [9.9, 9.9, 10.1, 10.1],
+    xyz = np.array([
+        [0.0, 0.0, 0.5],
+        [10.0, 10.0, 3.0],
     ], dtype=np.float32)
     ground_xyz = np.array([
         [0.0, 0.0, 0.0],
@@ -1162,17 +1318,15 @@ def test_filter_floating_clusters_uses_bounds_and_nearest_ground_mean():
         [10.0, 9.0, 0.0],
     ], dtype=np.float32)
 
-    filtered, ground_gaps = TreeSegmRay._filter_floating_clusters(
-        labels,
-        min_heights,
-        xy_bounds,
+    retained_mask = TreeSegmRay._filter_floating_clusters(
+        xyz,
         ground_xyz=ground_xyz,
+        voxel_size=0.5,
         max_gap=1.0,
         nearest_ground_points=2,
     )
 
-    assert filtered.tolist() == [0, -1]
-    np.testing.assert_allclose(ground_gaps, [0.5, 3.0])
+    assert retained_mask.tolist() == [True, False]
 
 
 def test_reduce_labels_removes_gaps_without_discarding_zero():
