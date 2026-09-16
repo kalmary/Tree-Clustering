@@ -332,8 +332,11 @@ class TreeSegmRay:
         return result
 
     def _reduce_labels(self, labels: np.ndarray) -> np.ndarray:
-        _, labels[labels != -1] = np.unique(labels[labels != -1], return_inverse=True)
-        labels[labels != -1] -= 1
+        valid_mask = labels != -1
+        _, labels[valid_mask] = np.unique(
+            labels[valid_mask],
+            return_inverse=True,
+        )
         return labels
 
     def _remove_small_clusters(self, tree_labels: np.ndarray,
@@ -343,6 +346,233 @@ class TreeSegmRay:
             if (tree_labels == lbl).sum() < min_points:
                 result[tree_labels == lbl] = -1
         return result
+
+    @staticmethod
+    def _connected_components_voxel(
+        xyz: np.ndarray,
+        voxel_size: float = 0.3,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Cluster a dense voxel grid using 26-neighbour connectivity.
+
+        Returns per-point labels, cluster minimum heights, and cluster XY
+        bounds ordered as ``x_min, y_min, x_max, y_max``.
+        """
+        if xyz.shape[0] == 0:
+            return (
+                np.zeros(0, dtype=np.int32),
+                np.zeros(0, dtype=np.float32),
+                np.zeros((0, 4), dtype=np.float32),
+            )
+        if voxel_size <= 0:
+            raise ValueError("voxel_size must be greater than zero")
+
+        from scipy.ndimage import label as ndimage_label
+
+        point_voxels = np.floor(xyz / voxel_size).astype(np.int32)
+        point_voxels -= point_voxels.min(axis=0)
+        grid_shape = tuple(int(axis_size) for axis_size in point_voxels.max(axis=0) + 1)
+
+        occupied_grid = np.zeros(grid_shape, dtype=bool)
+        occupied_grid[
+            point_voxels[:, 0],
+            point_voxels[:, 1],
+            point_voxels[:, 2],
+        ] = True
+        labeled_grid, n_clusters = ndimage_label(
+            occupied_grid,
+            structure=np.ones((3, 3, 3), dtype=bool),
+        )
+        del occupied_grid
+
+        point_labels = (
+            labeled_grid[
+                point_voxels[:, 0],
+                point_voxels[:, 1],
+                point_voxels[:, 2],
+            ]
+            - 1
+        ).astype(np.int32)
+        del labeled_grid, point_voxels
+        min_heights = np.full(n_clusters, np.inf, dtype=np.float32)
+        np.minimum.at(min_heights, point_labels, xyz[:, 2])
+
+        xy_bounds = np.empty((n_clusters, 4), dtype=np.float32)
+        xy_bounds[:, :2] = np.inf
+        xy_bounds[:, 2:] = -np.inf
+        np.minimum.at(xy_bounds[:, 0], point_labels, xyz[:, 0])
+        np.minimum.at(xy_bounds[:, 1], point_labels, xyz[:, 1])
+        np.maximum.at(xy_bounds[:, 2], point_labels, xyz[:, 0])
+        np.maximum.at(xy_bounds[:, 3], point_labels, xyz[:, 1])
+
+        return point_labels, min_heights, xy_bounds
+
+    @staticmethod
+    def _segment_xy_connected_components(
+        xyz: np.ndarray,
+        voxel_size: float = 0.5,
+    ) -> np.ndarray:
+        """Segment points by 8-connected occupied cells in the XY plane."""
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=np.int32)
+        if voxel_size <= 0:
+            raise ValueError("voxel_size must be greater than zero")
+
+        from scipy.ndimage import label as ndimage_label
+
+        point_cells = np.floor(xyz[:, :2] / voxel_size).astype(np.int32)
+        point_cells -= point_cells.min(axis=0)
+        grid_shape = tuple(int(axis_size) for axis_size in point_cells.max(axis=0) + 1)
+        occupied_grid = np.zeros(grid_shape, dtype=bool)
+        occupied_grid[point_cells[:, 0], point_cells[:, 1]] = True
+        labeled_grid, _ = ndimage_label(
+            occupied_grid,
+            structure=np.ones((3, 3), dtype=bool),
+        )
+        point_labels = (labeled_grid[point_cells[:, 0], point_cells[:, 1]] - 1).astype(
+            np.int32
+        )
+        return point_labels
+
+    @classmethod
+    def _filter_floating_clusters(
+        cls,
+        xyz: np.ndarray,
+        ground_xyz: np.ndarray | None = None,
+        voxel_size: float = 0.5,
+        max_gap: float = 0.4,
+        boundary_margin: float = 0.5,
+        nearest_ground_points: int = 10,
+    ) -> np.ndarray:
+        """Return a point mask that excludes components floating above ground."""
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=bool)
+        if boundary_margin < 0:
+            raise ValueError("boundary_margin must not be negative")
+        if nearest_ground_points < 1:
+            raise ValueError("nearest_ground_points must be at least 1")
+
+        component_labels, min_heights, xy_bounds = cls._connected_components_voxel(
+            xyz,
+            voxel_size=voxel_size,
+        )
+        ground_gaps = np.empty(len(min_heights), dtype=np.float32)
+        if ground_xyz is not None and len(ground_xyz) > 0:
+            ground_tree = KDTree(ground_xyz[:, :2])
+            for cluster_id, bounds in enumerate(xy_bounds):
+                lower = bounds[:2] - boundary_margin
+                upper = bounds[2:] + boundary_margin
+                centre = (lower + upper) / 2.0
+                radius = float(np.linalg.norm((upper - lower) / 2.0))
+                nearby_indices = ground_tree.query_ball_point(centre, r=radius)
+                if nearby_indices:
+                    nearby_xy = ground_xyz[nearby_indices, :2]
+                    inside_box = np.all(
+                        (nearby_xy >= lower) & (nearby_xy <= upper),
+                        axis=1,
+                    )
+                    box_indices = np.asarray(nearby_indices)[inside_box]
+                else:
+                    box_indices = np.zeros(0, dtype=np.int64)
+
+                if len(box_indices) > 0:
+                    ground_level = float(ground_xyz[box_indices, 2].mean())
+                else:
+                    neighbour_count = min(nearest_ground_points, len(ground_xyz))
+                    _, nearest_indices = ground_tree.query(
+                        centre,
+                        k=neighbour_count,
+                    )
+                    nearest_indices = np.atleast_1d(nearest_indices)
+                    ground_level = float(ground_xyz[nearest_indices, 2].mean())
+                ground_gaps[cluster_id] = min_heights[cluster_id] - ground_level
+        else:
+            ground_gaps = min_heights - min_heights.min()
+
+        grounded_components = ground_gaps <= max_gap
+        filtered_component_labels = component_labels.copy()
+        filtered_component_labels[~grounded_components[component_labels]] = -1
+        retained_mask = filtered_component_labels >= 0
+
+        return retained_mask
+
+    @staticmethod
+    def _remove_partial_trunks(
+        xyz: np.ndarray,
+        cluster_ids: np.ndarray,
+    ) -> np.ndarray:
+        """Diagnose clusters and exclude vertically linear trunk fragments."""
+        if len(xyz) != len(cluster_ids):
+            raise ValueError("xyz and cluster_ids must have the same length")
+        if len(xyz) == 0:
+            return np.zeros(0, dtype=bool)
+        if np.any(cluster_ids < 0):
+            raise ValueError("cluster_ids must not contain negative labels")
+
+        cluster_count = int(cluster_ids.max()) + 1
+        counts = np.bincount(cluster_ids, minlength=cluster_count)
+        eligible_ids = np.flatnonzero(counts >= 100)
+        linearity = np.zeros(cluster_count, dtype=np.float64)
+        z_alignment = np.zeros(cluster_count, dtype=np.float64)
+
+        if len(eligible_ids) > 0:
+            coordinates = xyz - xyz[0]
+            x, y, z = coordinates.T
+            sums = np.column_stack(
+                (
+                    np.bincount(cluster_ids, weights=x, minlength=cluster_count),
+                    np.bincount(cluster_ids, weights=y, minlength=cluster_count),
+                    np.bincount(cluster_ids, weights=z, minlength=cluster_count),
+                )
+            )
+            eligible_counts = counts[eligible_ids]
+            means = sums[eligible_ids] / eligible_counts[:, None]
+
+            covariances = np.empty((len(eligible_ids), 3, 3), dtype=np.float64)
+            covariances[:, 0, 0] = (
+                np.bincount(cluster_ids, weights=x * x, minlength=cluster_count)[eligible_ids]
+                / eligible_counts
+                - means[:, 0] ** 2
+            )
+            covariances[:, 0, 1] = covariances[:, 1, 0] = (
+                np.bincount(cluster_ids, weights=x * y, minlength=cluster_count)[eligible_ids]
+                / eligible_counts
+                - means[:, 0] * means[:, 1]
+            )
+            covariances[:, 0, 2] = covariances[:, 2, 0] = (
+                np.bincount(cluster_ids, weights=x * z, minlength=cluster_count)[eligible_ids]
+                / eligible_counts
+                - means[:, 0] * means[:, 2]
+            )
+            covariances[:, 1, 1] = (
+                np.bincount(cluster_ids, weights=y * y, minlength=cluster_count)[eligible_ids]
+                / eligible_counts
+                - means[:, 1] ** 2
+            )
+            covariances[:, 1, 2] = covariances[:, 2, 1] = (
+                np.bincount(cluster_ids, weights=y * z, minlength=cluster_count)[eligible_ids]
+                / eligible_counts
+                - means[:, 1] * means[:, 2]
+            )
+            covariances[:, 2, 2] = (
+                np.bincount(cluster_ids, weights=z * z, minlength=cluster_count)[eligible_ids]
+                / eligible_counts
+                - means[:, 2] ** 2
+            )
+
+            eigenvalues, eigenvectors = np.linalg.eigh(covariances)
+            largest_eigenvalues = np.maximum(eigenvalues[:, 2], 0.0)
+            second_eigenvalues = np.maximum(eigenvalues[:, 1], 0.0)
+            valid_eigenvalues = largest_eigenvalues > 0.0
+            eligible_linearity = np.zeros(len(eligible_ids), dtype=np.float64)
+            eligible_linearity[valid_eigenvalues] = (
+                largest_eigenvalues[valid_eigenvalues]
+                - second_eigenvalues[valid_eigenvalues]
+            ) / largest_eigenvalues[valid_eigenvalues]
+            linearity[eligible_ids] = eligible_linearity
+            z_alignment[eligible_ids] = np.abs(eigenvectors[:, 2, 2])
+
+        is_trunk = (counts >= 100) & (linearity >= 0.55) & (z_alignment >= 0.70)
+        return ~is_trunk[cluster_ids]
 
     @staticmethod
     def _estimate_ground(tree_xyz: np.ndarray, grid_size: float = 2.0) -> np.ndarray:
@@ -554,7 +784,7 @@ class TreeSegmRay:
                        xyz: np.ndarray,
                        labels: np.ndarray | None = None,
                        rays: np.ndarray | None = None,
-                       debug: bool = False) -> np.ndarray:
+                       debug: bool = False) -> tuple[np.ndarray, np.ndarray]:
 
         self.start_container()
 
@@ -573,7 +803,8 @@ class TreeSegmRay:
         tree_rays = rays[tree_mask].copy() if rays is not None else None
 
         if tree_xyz.shape[0] == 0:
-            return np.zeros(0, dtype=np.int64)
+            empty_ids = np.zeros(0, dtype=np.int32)
+            return empty_ids, empty_ids.copy()
 
         if debug:
             if ground_xyz is not None:
@@ -593,7 +824,11 @@ class TreeSegmRay:
         else:
             ground_xyz = self._estimate_ground(tree_xyz)
         if ground_xyz.shape[0] < 3:
-            return np.full(tree_xyz.shape[0], -1, dtype=np.int64)
+            tree_instance_labels = np.full(tree_xyz.shape[0], -1, dtype=np.int32)
+            shrub_instance_labels = self._segment_shrubs(
+                tree_xyz, tree_instance_labels, ground_xyz=ground_xyz
+            )
+            return tree_instance_labels, shrub_instance_labels
 
         # Each call gets its own subdirectory so concurrent tiles never
         # overwrite each other's cloud.ply / ground.ply inside the container.
@@ -654,19 +889,111 @@ class TreeSegmRay:
 
 
 
-        return tree_instance_labels
+        tree_instance_labels = tree_instance_labels.astype(np.int32, copy=False)
+        shrub_instance_labels = self._segment_shrubs(
+            tree_xyz, tree_instance_labels, ground_xyz=ground_xyz
+        )
+        return tree_instance_labels, shrub_instance_labels
 
-    def _segment_birch(self, xyz: np.ndarray, labels: np.ndarray, rays: np.ndarray | None = None) -> np.ndarray:
+    def _segment_shrubs(
+        self,
+        tree_xyz: np.ndarray,
+        tree_ids: np.ndarray,
+        ground_xyz: np.ndarray | None = None,
+        xy_voxel_size: float = 0.5,
+        outlier_neighbors: int = 48,
+        outlier_std_ratio: float = 0.5,
+    ) -> np.ndarray:
+        """Return shrub instance IDs for vegetation not assigned to a tree.
+
+        ``tree_xyz`` and ``tree_ids`` contain only points selected by the
+        vegetation-class mask. Floating components and vertically elongated
+        clusters are rejected and remain at shrub ID ``-1``.
+        """
+        if tree_xyz.shape[0] != tree_ids.shape[0]:
+            raise ValueError(
+                "tree_xyz and tree_ids length mismatch: "
+                f"{tree_xyz.shape[0]} != {tree_ids.shape[0]}"
+            )
+
+        shrub_ids = np.full(tree_ids.shape, -1, dtype=np.int32)
+        if len(tree_xyz) == 0:
+            return shrub_ids
+        if outlier_neighbors < 1:
+            raise ValueError("outlier_neighbors must be at least 1")
+        if outlier_std_ratio < 0:
+            raise ValueError("outlier_std_ratio must not be negative")
+
+        shrub_point_indices = np.flatnonzero(tree_ids == -1)
+        shrub_xyz = tree_xyz[shrub_point_indices]
+        if len(shrub_xyz) <= 1:
+            return shrub_ids
+
+        retained_mask = self._filter_floating_clusters(
+            shrub_xyz,
+            ground_xyz=ground_xyz,
+            voxel_size=0.5,
+            max_gap=1.0,
+        )
+        shrub_point_indices = shrub_point_indices[retained_mask]
+        shrub_xyz = shrub_xyz[retained_mask]
+
+        shrub_instance_ids = self._segment_xy_connected_components(
+            shrub_xyz,
+            voxel_size=xy_voxel_size,
+        )
+        retained_mask = self._remove_partial_trunks(
+            shrub_xyz,
+            shrub_instance_ids,
+        )
+
+        shrub_point_indices = shrub_point_indices[retained_mask]
+        shrub_xyz = shrub_xyz[retained_mask]
+        shrub_instance_ids = shrub_instance_ids[retained_mask]
+        if len(shrub_xyz) == 0:
+            return shrub_ids
+
+        shrub_instance_ids = self._reduce_labels(shrub_instance_ids)
+        shrub_ids[shrub_point_indices] = shrub_instance_ids
+        return shrub_ids
+
+    def _postprocess_tree_group(
+        self,
+        tree_xyz: np.ndarray,
+        tree_ids: np.ndarray,
+        shrub_ids: np.ndarray,
+    ) -> np.ndarray:
+        """Postprocess a Birch group only when it contains no shrubs."""
+        if tree_xyz.shape[0] != tree_ids.shape[0] or tree_ids.shape != shrub_ids.shape:
+            raise ValueError("Tree-group points, tree IDs, and shrub IDs must align")
+        if np.any(shrub_ids >= 0):
+            return tree_ids
+
+        tree_ids = self._merge_close_trunks(
+            tree_xyz,
+            tree_ids,
+            min_trunk_dist=0.3,
+            trunk_height_band=(0.5, 1.0),
+        )
+        return self._remove_small_clusters(tree_ids, min_points=5000)
+
+    def _segment_birch(
+        self,
+        xyz: np.ndarray,
+        labels: np.ndarray,
+        rays: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         from sklearn.cluster import Birch
 
 
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
-            return np.full(0, -1, dtype=np.int32)
+            empty_ids = np.full(0, -1, dtype=np.int32)
+            return empty_ids, empty_ids.copy()
         
         tree_xyz = xyz[tree_mask]
 
-        n_clusters = int(tree_xyz.shape[0] / 1e7)
+        n_clusters = int(tree_xyz.shape[0] / 4e6)
         n_clusters = max(2, int(n_clusters))
 
         with tqdm(desc="Subsampling PCD for coarse tree clusterization", unit="step", total=1, leave=False, position=1, disable=not self.verbose) as pbar:
@@ -714,8 +1041,10 @@ class TreeSegmRay:
         gc.collect()
 
         full_tree_ids = np.full(len(tree_xyz), -1, dtype=np.int32)
+        full_shrub_ids = np.full(len(tree_xyz), -1, dtype=np.int32)
         tree_indices = np.flatnonzero(tree_mask)
         tree_id_offset = 0
+        shrub_id_offset = 0
 
         group_labels = np.unique(group_ids)
         pbar = tqdm(group_labels, desc="Fine tree clustering", leave=False, position=1) if self.verbose else group_labels
@@ -749,7 +1078,11 @@ class TreeSegmRay:
 
             self.rm_container()
             try:
-                tree_ids_voxel = self._segment_small(group_voxel, group_voxel_labels, rays=group_voxel_rays)
+                tree_ids_voxel, shrub_ids_voxel = self._segment_small(
+                    group_voxel,
+                    group_voxel_labels,
+                    rays=group_voxel_rays,
+                )
             except Exception:  # noqa: BLE001
                 max_tree_dim = 3.0
                 group_voxel_tree = group_voxel[group_voxel_tree_mask]
@@ -761,27 +1094,61 @@ class TreeSegmRay:
                     else np.full(group_voxel_tree_mask.sum(), -1, dtype=np.int32)
                 )
 
+                if group_voxel_labels is not None and self.ground_label is not None:
+                    group_ground_xyz = group_voxel[
+                        group_voxel_labels == self.ground_label
+                    ]
+                else:
+                    group_ground_xyz = None
+
+                shrub_ids_voxel = self._segment_shrubs(
+                    group_voxel_tree, tree_ids_voxel, ground_xyz=group_ground_xyz
+                )
+
             group_voxel_tree_indices = group_indices[group_voxel_tree_mask]
             tree_positions_in_voxel = np.searchsorted(tree_indices, group_voxel_tree_indices)
             group_tree_mask_in_voxel = group_ids[tree_positions_in_voxel] == group_id
 
-            group_tree_ids = tree_ids_voxel[group_tree_mask_in_voxel].astype(np.int32, copy=True)
+            group_tree_ids = tree_ids_voxel[group_tree_mask_in_voxel].astype(
+                np.int32, copy=True
+            )
+            group_shrub_ids = shrub_ids_voxel[group_tree_mask_in_voxel].astype(
+                np.int32, copy=True
+            )
+            target_positions = tree_positions_in_voxel[group_tree_mask_in_voxel]
+            group_tree_ids = self._postprocess_tree_group(
+                tree_xyz[target_positions],
+                group_tree_ids,
+                group_shrub_ids,
+            )
+
             valid = group_tree_ids >= 0
             if valid.any():
                 group_tree_ids[valid] += tree_id_offset
                 tree_id_offset = int(group_tree_ids[valid].max()) + 1
-            full_tree_ids[tree_positions_in_voxel[group_tree_mask_in_voxel]] = group_tree_ids
 
-            del group_index_chunks, group_indices, group_voxel, group_voxel_labels, group_voxel_rays, tree_ids_voxel
+            valid_shrub = group_shrub_ids >= 0
+            if valid_shrub.any():
+                group_shrub_ids[valid_shrub] += shrub_id_offset
+                shrub_id_offset = int(group_shrub_ids[valid_shrub].max()) + 1
+
+            full_tree_ids[target_positions] = group_tree_ids
+            full_shrub_ids[target_positions] = group_shrub_ids
+
+            del (
+                group_index_chunks,
+                group_indices,
+                group_voxel,
+                group_voxel_labels,
+                group_voxel_rays,
+                tree_ids_voxel,
+                shrub_ids_voxel,
+            )
             gc.collect()
 
-        full_tree_ids = self._merge_close_trunks(tree_xyz, full_tree_ids,
-                                                 min_trunk_dist=0.3,
-                                                 trunk_height_band=(0.5, 1.0))
-        full_tree_ids = self._remove_small_clusters(full_tree_ids, min_points=5000)
         full_tree_ids = self._reduce_labels(full_tree_ids)
 
-        return full_tree_ids.astype(np.int32, copy=False)
+        return full_tree_ids.astype(np.int32, copy=False), full_shrub_ids
 
     @staticmethod
     def voxel_subsample_vectorized(xyz, voxel_size=0.25):
@@ -810,19 +1177,61 @@ class TreeSegmRay:
         mask[chosen] = True
         return mask
 
+    @staticmethod
+    def _merge_instance_ids(
+        tree_ids: np.ndarray,
+        shrub_ids: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if tree_ids.shape != shrub_ids.shape:
+            raise ValueError(
+                "tree_ids and shrub_ids shape mismatch: "
+                f"{tree_ids.shape} != {shrub_ids.shape}"
+            )
+
+        tree_mask = tree_ids >= 0
+        shrub_mask = shrub_ids >= 0
+        if np.any(tree_mask & shrub_mask):
+            raise ValueError(
+                "A point cannot belong to both a tree and a shrub instance"
+            )
+
+        int32_max = np.iinfo(np.int32).max
+        merged_instance_ids = np.full(tree_ids.shape, -1, dtype=np.int32)
+        if tree_mask.any():
+            max_tree_id = int(tree_ids[tree_mask].max())
+            if max_tree_id > int32_max:
+                raise OverflowError("Tree instance ID exceeds int32 range")
+            merged_instance_ids[tree_mask] = tree_ids[tree_mask]
+            shrub_offset = max_tree_id + 1
+        else:
+            shrub_offset = 0
+
+        if shrub_mask.any():
+            max_merged_shrub_id = int(shrub_ids[shrub_mask].max()) + shrub_offset
+            if max_merged_shrub_id > int32_max:
+                raise OverflowError("Merged shrub instance ID exceeds int32 range")
+            merged_instance_ids[shrub_mask] = (
+                shrub_ids[shrub_mask].astype(np.int64) + shrub_offset
+            ).astype(np.int32)
+
+        initial_model_species = np.full(tree_ids.shape, -1, dtype=np.int8)
+        initial_model_species[shrub_mask] = 17
+        return merged_instance_ids, initial_model_species
+
 
     def segment(self, xyz: np.ndarray, labels: np.ndarray, rays: np.ndarray | None = None,
                 gps_time: np.ndarray | None = None, point_source_id: np.ndarray | None = None,
-                scan_angle_rank: np.ndarray | None = None) -> np.ndarray:
+                scan_angle_rank: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
+        full_shrub_ids = np.full(len(xyz), -1, dtype=np.int32)
         if xyz.shape[0] == 0:
-            return full_tree_ids
+            return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
         if xyz.shape[0] != labels.shape[0]:
             raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
         
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
-            return full_tree_ids
+            return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
 
         if self.use_rays and rays is None:
             rays = get_rays(
@@ -837,13 +1246,16 @@ class TreeSegmRay:
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
 
-        if xyz.shape[0] >= 1e7: # threshold checked
-            tree_ids = self._segment_birch(xyz.copy(), labels, rays=rays)
+        if xyz[tree_mask].shape[0] > 1e7:  # threshold checked
+            tree_ids, shrub_ids = self._segment_birch(
+                xyz.copy(), labels, rays=rays
+            )
 
         else:
-            tree_ids = self._segment_small(xyz, labels, rays=rays)
+            tree_ids, shrub_ids = self._segment_small(xyz, labels, rays=rays)
         full_tree_ids[tree_mask] = tree_ids
-        return full_tree_ids
+        full_shrub_ids[tree_mask] = shrub_ids
+        return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -877,14 +1289,14 @@ def main():
         xyz    = np.vstack([np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)]).T
         labels = np.asarray(las.classification)
 
-        labels = seg.segment(
+        instance_ids, _initial_model_species = seg.segment(
             xyz, labels,
             gps_time=np.asarray(las.gps_time),
             point_source_id=np.asarray(las.point_source_id),
             scan_angle_rank=np.asarray(las.scan_angle_rank),
         )
 
-        save_laz(las, labels, path.with_name(f"{path.stem}_segmented.laz"))
+        save_laz(las, instance_ids, path.with_name(f"{path.stem}_segmented.laz"))
 
         for tree_xyz in [xyz[labels == tree_label] for tree_label in np.unique(labels) if tree_label != -1]:
             plot_cloud(tree_xyz)
