@@ -395,12 +395,12 @@ def main():
         pts         = np.vstack([las.x, las.y, las.z]).T  # pyright: ignore[reportCallIssue, reportArgumentType]
         cls         = np.asarray(las.classification, dtype=np.int32)
 
-        tree_labels = seg.segment(pts, cls)
-        tree_xyz    = pts[cls == seg.tree_label]
+        instance_ids, initial_model_species = seg.segment(pts, cls)
+        tree_mask = (instance_ids >= 0) & (initial_model_species == -1)
 
         save_tree_projections_pdf(
-            points      = tree_xyz[tree_labels != -1],
-            labels      = tree_labels[tree_labels != -1],
+            points      = pts[tree_mask],
+            labels      = instance_ids[tree_mask],
             las_idx     = 0,
             source_name = path.name,
             output_dir  = path.parent,
