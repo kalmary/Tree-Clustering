@@ -1,10 +1,8 @@
 import sys
 import time
-from typing import Optional
 
 import numpy as np
 import pyvista as pv
-
 
 DEFAULT_BUFFER_SIZE = 500_000
 
@@ -19,8 +17,8 @@ def _show_native(plotter: pv.Plotter) -> None:
     def mark_closed(*_):
         closed["value"] = True
 
-    plotter.iren.interactor.AddObserver("ExitEvent", mark_closed)
-    plotter.iren.interactor.AddObserver("DeleteEvent", mark_closed)
+    plotter.iren.interactor.AddObserver("ExitEvent", mark_closed)  # pyright: ignore[reportOptionalMemberAccess, reportArgumentType]
+    plotter.iren.interactor.AddObserver("DeleteEvent", mark_closed)  # pyright: ignore[reportOptionalMemberAccess, reportArgumentType]
 
     plotter.show(interactive_update=True, auto_close=False)
 
@@ -28,8 +26,6 @@ def _show_native(plotter: pv.Plotter) -> None:
         while not closed["value"]:
             plotter.update(stime=10, force_redraw=False)
             time.sleep(0.01)
-    except KeyboardInterrupt:
-        raise
     finally:
         plotter.close()
 
@@ -37,7 +33,7 @@ def _show_native(plotter: pv.Plotter) -> None:
 def _add_point_buffer(
     plotter: pv.Plotter,
     points: np.ndarray,
-    labels: Optional[np.ndarray],
+    labels: np.ndarray | None,
     origin: np.ndarray,
     point_size: int,
     render_points_as_spheres: bool,
@@ -69,7 +65,7 @@ def _add_point_buffer(
 def _add_point_buffers(
     plotter: pv.Plotter,
     points: np.ndarray,
-    labels: Optional[np.ndarray],
+    labels: np.ndarray | None,
     origin: np.ndarray,
     buffer_size: int,
     point_size: int,
@@ -93,7 +89,7 @@ def _add_point_buffers(
 
 def plot_cloud(
     points: np.ndarray,
-    labels: Optional[np.ndarray] = None,
+    labels: np.ndarray | None = None,
     buffer_size: int = DEFAULT_BUFFER_SIZE,
     point_size: int = 3,
     render_points_as_spheres: bool = False,
@@ -127,5 +123,5 @@ def plot_cloud(
         verbose,
     )
     
-    plotter.reset_camera()
+    plotter.reset_camera()  # pyright: ignore[reportCallIssue]
     _show_native(plotter)

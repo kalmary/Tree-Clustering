@@ -8,7 +8,7 @@
     "global_taper":        null,
     "global_taper_factor": null,
     "grid_width":          null,
-    "use_rays":            false,
+    "use_rays":            true,
     "segment_branches":    false,
     "ground_label":        1,
     "tree_label":          7

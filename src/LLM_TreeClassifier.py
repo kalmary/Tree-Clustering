@@ -1,12 +1,11 @@
-import numpy as np
-import torch
-import ollama
-from PIL import Image
-import tempfile
 import os
 import re
+import tempfile
 
-
+import numpy as np
+import ollama
+import torch
+from PIL import Image
 
 
 class LLM_Classifier:
@@ -44,12 +43,12 @@ class LLM_Classifier:
         self.model_name = model_name
 
     @staticmethod
-    def clean_output(model_response):
+    def clean_output(model_response) -> int | None:
         # Extracts only the digits and signs
         numbers = re.findall(r"-?\d+", model_response)
         return int(numbers[0]) if numbers else None
 
-    def predict(self, cloud: np.ndarray) -> int:
+    def predict(self, cloud: np.ndarray) -> int | None:
         # 1. Generate the 5 depth-map views
         views_tensor = self._cloud2sideViews(cloud)
         
@@ -123,8 +122,8 @@ class LLM_Classifier:
         resolution_xy = self.resolution
         points = torch.from_numpy(points).type(dtype=torch.float64)
 
-        min_xyz = points.min(dim=0).values
-        max_xyz = points.max(dim=0).values
+        min_xyz = points.min(dim=0).values  # pyright: ignore[reportCallIssue]
+        max_xyz = points.max(dim=0).values  # pyright: ignore[reportCallIssue]
 
         center = (min_xyz + max_xyz) / 2
         max_range = (max_xyz - min_xyz).max()

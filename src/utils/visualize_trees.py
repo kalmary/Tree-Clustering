@@ -34,19 +34,17 @@ from __future__ import annotations
 
 import pathlib
 import sys
-from typing import Dict, Optional
 
 import matplotlib
+
 matplotlib.use("Agg")
-import matplotlib.gridspec as gridspec
+import fpsample
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib import gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 from pypdf import PdfReader, PdfWriter
-import fpsample
-
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Depth-map renderer
@@ -57,7 +55,7 @@ def cloud2sideViews_torch(points: torch.Tensor,
                        margin_ratio: float = 0.05) -> torch.Tensor:
     n_points = 16384
     if points.shape[0] < n_points:
-        sampled_idx = fpsample.bucket_fps_kdline_sampling(xyz, n_points, h=7)
+        sampled_idx = fpsample.bucket_fps_kdline_sampling(xyz, n_points, h=7)  # noqa: F821  # pyright: ignore[reportUndefinedVariable]
         points = points[sampled_idx]
     
     points = points.type(torch.float64)
@@ -74,8 +72,8 @@ def cloud2sideViews_torch(points: torch.Tensor,
 
     def to_grid(val, min_val, max_val):
         return torch.clamp(
-            ((val - min_val) / (max_val - min_val + 1e-8) * (resolution_xy - 1)).long(),
-            0, resolution_xy - 1
+            ((val - min_val) / (max_val - min_val + 1e-8) * (resolution_xy - 1)).long(),  # pyright: ignore[reportOptionalOperand]
+            0, resolution_xy - 1  # pyright: ignore[reportOptionalOperand]
         )
 
     x, y, z = points[:, 0], points[:, 1], points[:, 2]
@@ -89,12 +87,12 @@ def cloud2sideViews_torch(points: torch.Tensor,
     def build_depth_map(indices_2d, distances, flip_y=False, flip_x=False):
         y_idx, x_idx = indices_2d
         if flip_y:
-            y_idx = resolution_xy - 1 - y_idx
+            y_idx = resolution_xy - 1 - y_idx  # pyright: ignore[reportOptionalOperand]
         if flip_x:
-            x_idx = resolution_xy - 1 - x_idx
+            x_idx = resolution_xy - 1 - x_idx  # pyright: ignore[reportOptionalOperand]
 
         flat_indices = y_idx * resolution_xy + x_idx
-        depth_map = torch.full((resolution_xy * resolution_xy,), float('inf'),
+        depth_map = torch.full((resolution_xy * resolution_xy,), float('inf'),  # pyright: ignore[reportOperatorIssue]
                                 dtype=torch.float64, device=distances.device)
         depth_map = torch.scatter_reduce(depth_map, 0, flat_indices, distances,
                                             reduce='amin', include_self=True)
@@ -149,7 +147,7 @@ CMAP        = "viridis"
 def _iter_tree_figures(
     points:              np.ndarray,
     labels:              np.ndarray,
-    las_idx:             Optional[int],
+    las_idx:             int | None,
     source_name:         str,
     cloud_dir:           pathlib.Path,
     resolution:          int,
@@ -276,7 +274,7 @@ def _merge_pdf_files(base_path: pathlib.Path, extra_path: pathlib.Path) -> None:
 def save_tree_projections_pdf(
     points:              np.ndarray,
     labels:              np.ndarray,
-    las_idx:             Optional[int],
+    las_idx:             int | None,
     source_name:         str,
     output_name:         str | pathlib.Path,
     output_dir:          str | pathlib.Path,
@@ -284,9 +282,9 @@ def save_tree_projections_pdf(
     margin_ratio:        float             = 0.05,
     max_points_per_tree: int               = 100_000,
     dpi:                 int               = 150,
-    device:              torch.device      = torch.device("cpu"),
-    tree_classifier:     Optional[object]  = None,
-) -> Dict[int, str]:
+    device:              torch.device | None = None,
+    tree_classifier:     object | None      = None,
+) -> dict[int, str]:
     """Render one page per tree to a PDF; return ``{tree_id: predicted_species}``.
 
     Memory model
@@ -309,6 +307,9 @@ def save_tree_projections_pdf(
     memory from one tree is released before the next begins.  Results are
     returned to the caller for the Excel sheet and are not embedded in the PDF.
     """
+    if device is None:
+        device = torch.device("cpu")
+
     output_dir  = pathlib.Path(output_dir)
     output_path = output_dir / output_name
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -333,7 +334,7 @@ def save_tree_projections_pdf(
     # When appending write to a separate temp file; merge afterwards.
     write_path = output_path.with_suffix(".new.pdf") if is_append else output_path
 
-    predictions: Dict[int, str] = {}
+    predictions: dict[int, str] = {}
 
     fig_gen = _iter_tree_figures(
         points=points, labels=labels, las_idx=las_idx,
@@ -352,7 +353,7 @@ def save_tree_projections_pdf(
                 if len(tree_pts) > 100_000:
                     idx      = np.random.choice(len(tree_pts), 100_000, replace=False)
                     tree_pts = tree_pts[idx]
-                predictions[int(tree_id)] = str(tree_classifier.predict(tree_pts))
+                predictions[int(tree_id)] = str(tree_classifier.predict(tree_pts))  # pyright: ignore[reportAttributeAccessIssue]
 
             pdf.savefig(fig, dpi=dpi, facecolor="white")
             plt.close(fig)  # release figure memory immediately
@@ -372,8 +373,9 @@ def save_tree_projections_pdf(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
-    import laspy
     import pathlib as pth
+
+    import laspy
 
     sys.path.append(str(pathlib.Path(__file__).parent.parent))
     from array_processing_RE import TreeSegmRay
@@ -390,7 +392,7 @@ def main():
 
     try:
         las         = laspy.read(path)
-        pts         = np.vstack([las.x, las.y, las.z]).T
+        pts         = np.vstack([las.x, las.y, las.z]).T  # pyright: ignore[reportCallIssue, reportArgumentType]
         cls         = np.asarray(las.classification, dtype=np.int32)
 
         tree_labels = seg.segment(pts, cls)

@@ -173,4 +173,5 @@ cython_debug/
 *.xlsx
 *.laz
 **/split/
+**/fixtures
 
