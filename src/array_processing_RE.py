@@ -1839,8 +1839,9 @@ def main():
     import laspy
 
     try:
-        from utils.plot_cloud import plot_cloud
         from utils.save_laz import save_laz
+
+        from utils.plot_cloud import plot_cloud
     except ImportError:
         from .utils.plot_cloud import plot_cloud
         from .utils.save_laz import save_laz
