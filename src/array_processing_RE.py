@@ -1767,8 +1767,7 @@ def main():
 
     for path in [
         Path(
-            "/Users/michalsiniarski/Documents/PROGRAMMING/BRIK-data-processing/"
-            "src/TreeClustering/fixtures/BIG_CLOUD.laz"
+            "/Users/michalsiniarski/Documents/PROGRAMMING/Tree-Clustering/fixtures/Grajewo_2026_6_1_mod.laz"
         )
     ]:
         las = laspy.read(path)
@@ -1784,6 +1783,8 @@ def main():
 
         save_laz(las, _merged_instance_ids, path.with_name(f"{path.stem}_segmented.laz"))
         for instance_id in np.unique(_merged_instance_ids):
+            if instance_id == -1:
+                continue
             plot_cloud(xyz[_merged_instance_ids == instance_id])
 
 
