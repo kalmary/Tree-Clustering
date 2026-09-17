@@ -15,21 +15,106 @@ Plots a point cloud using pyvista.
 """
 
 import sys
-from typing import Any
+import time
 
 import numpy as np
 import pyvista as pv
 from numpy.typing import NDArray
 
-BUFFER = 500_000
+DEFAULT_BUFFER_SIZE = 500_000
+
+
+def _show_native(plotter: pv.Plotter) -> None:
+    if sys.platform != "darwin":
+        plotter.show()
+        return
+
+    closed = {"value": False}
+
+    def mark_closed(*_):
+        closed["value"] = True
+
+    plotter.iren.interactor.AddObserver("ExitEvent", mark_closed)  # pyright: ignore[reportOptionalMemberAccess, reportArgumentType]
+    plotter.iren.interactor.AddObserver("DeleteEvent", mark_closed)  # pyright: ignore[reportOptionalMemberAccess, reportArgumentType]
+
+    plotter.show(interactive_update=True, auto_close=False)
+
+    try:
+        while not closed["value"]:
+            plotter.update(stime=10, force_redraw=False)
+            time.sleep(0.01)
+    finally:
+        plotter.close()
+
+
+def _add_point_buffer(
+    plotter: pv.Plotter,
+    points: np.ndarray,
+    labels: np.ndarray | None,
+    origin: np.ndarray,
+    point_size: int,
+    render_points_as_spheres: bool,
+) -> None:
+    local_points = np.ascontiguousarray(points - origin, dtype=np.float32)
+    cloud = pv.PolyData(local_points)
+
+    point_kwargs = {
+        "point_size": point_size,
+        "render_points_as_spheres": render_points_as_spheres,
+    }
+
+    if labels is not None:
+        cloud["cluster"] = np.ascontiguousarray(labels, dtype=np.float32)
+        plotter.add_mesh(
+            cloud,
+            scalars="cluster",
+            cmap="tab20",
+            **point_kwargs,
+        )
+    else:
+        plotter.add_mesh(
+            cloud,
+            color="green",
+            **point_kwargs,
+        )
+
+
+def _add_point_buffers(
+    plotter: pv.Plotter,
+    points: np.ndarray,
+    labels: np.ndarray | None,
+    origin: np.ndarray,
+    buffer_size: int,
+    point_size: int,
+    render_points_as_spheres: bool,
+    verbose: bool,
+) -> None:
+    for start in range(0, len(points), buffer_size):
+        stop = min(start + buffer_size, len(points))
+        if verbose and len(points) > buffer_size:
+            print(f"Adding point buffer {start:,}-{stop:,} / {len(points):,}")
+        chunk_labels = labels[start:stop] if labels is not None else None
+        _add_point_buffer(
+            plotter,
+            points[start:stop],
+            chunk_labels,
+            origin,
+            point_size,
+            render_points_as_spheres,
+        )
+
 
 def plot_cloud(
-    points: NDArray[np.float32],
-    feature: NDArray[np.number[Any]] | None = None,
-    title: str | None = None,
-    *,
-    buffer_size: int = BUFFER,
-) -> None:
+    points: np.ndarray,
+    labels: np.ndarray | None = None,
+    buffer_size: int = DEFAULT_BUFFER_SIZE,
+    point_size: int = 3,
+    render_points_as_spheres: bool = False,
+    verbose: bool = False,
+):
+    points = np.asarray(points)
+    labels = np.asarray(labels) if labels is not None else None
+
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("points must have shape (n, 3)")
     if buffer_size <= 0:
@@ -45,50 +130,16 @@ def plot_cloud(
         if values.shape[0] != points.shape[0]:
             raise ValueError("feature must contain one value per point")
 
-    if "ipykernel" in sys.modules:
-        pv.set_jupyter_backend("trame")
-    plotter = pv.Plotter()
-    if title is not None:
-        plotter.add_title(title)
-
-    color_limits = None
-    continuous = values is not None and np.issubdtype(values.dtype, np.floating)
-    if values is not None and values.size:
-        valid_values = values[np.isfinite(values)] if continuous else values
-        if valid_values.size:
-            color_limits = (float(valid_values.min()), float(valid_values.max()))
-
-    for start in range(0, points.shape[0], buffer_size):
-        end = min(start + buffer_size, points.shape[0])
-        point_buffer = points[start:end]
-        vertices = pv.CellArray.from_regular_cells(
-            np.arange(point_buffer.shape[0], dtype=pv.ID_TYPE).reshape(-1, 1)
-        )
-        cloud = pv.PolyData(point_buffer, verts=vertices)
-
-        if values is None:
-            plotter.add_mesh(
-                cloud,
-                color="green",
-                point_size=5,
-                render_points_as_spheres=True,
-            )
-            continue
-
-        scalar_name = "feature" if continuous else "cluster"
-        plotter.add_mesh(
-            cloud,
-            scalars=values[start:end],
-            clim=color_limits,
-            cmap="viridis" if continuous else "tab20",
-            point_size=5,
-            render_points_as_spheres=True,
-            scalar_bar_args={"title": scalar_name},
-            show_scalar_bar=start == 0,
-        )
-
-    try:
-        plotter.show()
-    finally:
-        plotter.close()
-        plotter.deep_clean()
+    _add_point_buffers(
+        plotter,
+        points,
+        labels,
+        origin,
+        buffer_size,
+        point_size,
+        render_points_as_spheres,
+        verbose,
+    )
+    
+    plotter.reset_camera()  # pyright: ignore[reportCallIssue]
+    _show_native(plotter)
