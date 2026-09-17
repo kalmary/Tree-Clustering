@@ -15,6 +15,7 @@ Plots a point cloud using pyvista.
 """
 
 import sys
+import time
 from typing import Any
 
 import numpy as np
@@ -23,6 +24,27 @@ from numpy.typing import NDArray
 
 BUFFER = 500_000
 
+
+def _show_plotter(plotter: pv.Plotter) -> None:
+    if sys.platform != "darwin" or "ipykernel" in sys.modules:
+        plotter.show()
+        return
+
+    closed = False
+
+    def mark_closed(*_) -> None:
+        nonlocal closed
+        closed = True
+
+    plotter.iren.interactor.AddObserver("ExitEvent", mark_closed)  # pyright: ignore[reportOptionalMemberAccess, reportArgumentType]
+    plotter.iren.interactor.AddObserver("DeleteEvent", mark_closed)  # pyright: ignore[reportOptionalMemberAccess, reportArgumentType]
+    plotter.show(interactive_update=True, auto_close=False)
+
+    while not closed:
+        plotter.update(stime=10, force_redraw=False)
+        time.sleep(0.01)
+
+
 def plot_cloud(
     points: NDArray[np.float32],
     feature: NDArray[np.number[Any]] | None = None,
@@ -30,6 +52,7 @@ def plot_cloud(
     *,
     buffer_size: int = BUFFER,
 ) -> None:
+    points = np.asarray(points)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("points must have shape (n, 3)")
     if buffer_size <= 0:
@@ -88,7 +111,34 @@ def plot_cloud(
         )
 
     try:
-        plotter.show()
+        _show_plotter(plotter)
     finally:
         plotter.close()
         plotter.deep_clean()
+
+
+def test_show_plotter_uses_interactive_updates_on_macos(monkeypatch):
+    callbacks = {}
+
+    class Interactor:
+        def AddObserver(self, event, callback):
+            callbacks[event] = callback
+
+    class Plotter:
+        def __init__(self):
+            self.iren = type("Renderer", (), {"interactor": Interactor()})()
+            self.show_options = None
+
+        def show(self, **options):
+            self.show_options = options
+            callbacks["ExitEvent"]()
+
+        def update(self, **options):
+            raise AssertionError("closed plotter must not be updated")
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    plotter = Plotter()
+
+    _show_plotter(plotter)  # pyright: ignore[reportArgumentType]
+
+    assert plotter.show_options == {"interactive_update": True, "auto_close": False}

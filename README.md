@@ -65,10 +65,12 @@ seg = TreeSegmRay(ground_label=1, tree_label=7, verbose=True)
 # seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
 
 # run segmentation
-tree_instance_labels = seg.segment(xyz, labels)
+instance_labels, initial_species = seg.segment(xyz, labels)
 ```
 
-`segment()` returns an integer array with one tree instance ID per point, and `-1` for unassigned points.
+`segment()` returns two point-aligned arrays. `instance_labels` contains tree and
+shrub instance IDs, with `-1` for unassigned points. `initial_species` contains
+`17` for shrubs and `-1` for tree instances that still require classification.
 
 Direct script execution is also supported:
 
@@ -77,4 +79,3 @@ python src/array_processing_RE.py
 ```
 
 But the import-based approach is the recommended workflow.
-
