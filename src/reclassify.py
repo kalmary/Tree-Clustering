@@ -28,18 +28,13 @@ from __future__ import annotations
 
 import pathlib
 import shutil
-from typing import Optional
 
 import numpy as np
 import openpyxl
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from tqdm import tqdm
-from openpyxl.styles import Font, PatternFill, Alignment
 
 from GPT_TreeClassifier import LLM_Classifier
-from fpsample import fps_sampling
-
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -68,7 +63,7 @@ def _rewrite_species_sheet(wb: openpyxl.Workbook, species_dict: dict) -> None:
     ws.column_dimensions["C"].width = 28
 
 
-def _npy_stem_to_row(ws, stem: str) -> Optional[int]:
+def _npy_stem_to_row(ws, stem: str) -> int | None:
     """Return the 1-based row index in *ws* whose column-A value matches *stem*.npy.
 
     Column A stores filenames like ``51_102.npy``.
@@ -83,7 +78,7 @@ def _npy_stem_to_row(ws, stem: str) -> Optional[int]:
     return None
 
 
-def _label_code_from_prediction(prediction: str, species_dict: dict) -> Optional[int]:
+def _label_code_from_prediction(prediction: str, species_dict: dict) -> int | None:
     """Map a raw prediction string back to its integer species code.
 
     Tries to match against both the Latin name (index 0) and the Polish name
@@ -185,14 +180,14 @@ def reclassify_trees(
             # Load point cloud
             try:
                 pts = np.load(npy_src).astype(np.float32)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"    [WARN] Could not load {npy_src.name}: {e}")
                 continue
 
             # Run classifier
             try:
                 prediction_str = str(classifier.predict(pts))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"    [WARN] Classifier failed on {npy_src.name}: {e}")
                 prediction_str = ""
 
@@ -228,6 +223,7 @@ def reclassify_trees(
 
 if __name__ == "__main__":
     import os
+
     from dotenv import load_dotenv
 
     load_dotenv()

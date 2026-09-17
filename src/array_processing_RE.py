@@ -1,3 +1,5 @@
+# pyright: basic
+
 import gc
 import json
 import os
@@ -7,10 +9,20 @@ import struct
 import subprocess
 import tempfile
 import uuid
-from typing import Any, cast
+from typing import Any
+
+# from dataclasses import asdict, dataclass, field
+# from pprint import pprint
+
+try:
+    from utils import get_las_ray_inputs, get_rays
+except ImportError:
+    try:
+        from .utils import get_las_ray_inputs, get_rays
+    except ImportError:
+        from .src.utils import get_las_ray_inputs, get_rays
 
 import numpy as np
-from numpy.typing import NDArray
 from scipy.spatial import Delaunay, KDTree
 from tqdm import tqdm
 
@@ -34,20 +46,20 @@ from tqdm import tqdm
 class TreeSegmRay:
     def __init__(
         self,
-        height_min: float = 2.0,
-        max_diameter: float = 0.9,
-        crop_length: float = 1.0,
-        distance_limit: float = 0.3,
-        girth_height_ratio: float = 0.12,
-        gravity_factor: float = 0.75,
-        global_taper: float | None = None,
+        height_min:          float         = 2.0,
+        max_diameter:        float         = 0.9,
+        crop_length:         float         = 1.0,
+        distance_limit:      float         = 0.3,
+        girth_height_ratio:  float         = 0.12,
+        gravity_factor:      float         = 0.75,
+        global_taper:        float | None = None,
         global_taper_factor: float | None = None,
-        grid_width: float | None = None,
-        use_rays: bool = False,
-        segment_branches: bool = False,
-        ground_label: int | None = None,
-        tree_label: int | None = None,
-        verbose: bool = False,
+        grid_width:          float | None = None,
+        use_rays:            bool          = False,
+        segment_branches:    bool          = False,
+        ground_label:        int | None = None,
+        tree_label:          int | None = None,
+        verbose:             bool          = False
     ):
         self.verbose = verbose
         self.height_min = height_min
@@ -69,19 +81,14 @@ class TreeSegmRay:
         self._backend = self._detect_backend()
 
     @classmethod
-    def from_config(
-        cls,
-        cfg: dict[str, Any] | None = None,
-        cfg_path: str | pth.Path | None = None,
-        verbose: bool = False,
-    ) -> "TreeSegmRay":
+    def from_config(cls, cfg: dict[str, Any] | None = None, cfg_path: str | pth.Path | None = None, verbose: bool = False) -> "TreeSegmRay":
         if cfg is not None:
             return cls(**cfg, verbose=verbose)
         elif cfg is None and cfg_path is not None:
             cfg_path = pth.Path(cfg_path)
-            with open(cfg_path, "r") as f:
-                cfg = cast(dict[str, Any], json.load(f))
-            return cls(**cfg, verbose=verbose)
+            with open(cfg_path, 'r') as f:
+                cfg = json.load(f)
+            return cls(**cfg, verbose=verbose)  # pyright: ignore[reportCallIssue]
         else:
             raise ValueError("Either cfg or cfg_path must be provided.")
 
@@ -119,12 +126,8 @@ class TreeSegmRay:
 
     def rm_container(self):
         if self._container_name:
-            subprocess.run(
-                ["docker", "rm", "-f", self._container_name],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            subprocess.run(["docker", "rm", "-f", self._container_name],
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self._container_name = None
 
         if self._shared_tmpdir:
@@ -140,50 +143,42 @@ class TreeSegmRay:
         if shutil.which("rayextract"):
             return "native"
         if shutil.which("docker"):
-            if (
-                subprocess.run(
-                    ["docker", "info"], capture_output=True, check=False
-                ).returncode
-                != 0
-            ):
+            if subprocess.run(["docker", "info"], check=False, capture_output=True).returncode != 0:
                 subprocess.run(["sudo", "systemctl", "start", "docker"], check=True)
                 subprocess.run(["docker", "info"], check=True)
 
             r = subprocess.run(
-                [
-                    "docker",
-                    "image",
-                    "inspect",
-                    "ghcr.io/csiro-robotics/raycloudtools:latest",
-                ],
+                ["docker", "image", "inspect",
+                "ghcr.io/csiro-robotics/raycloudtools:latest"],
+                check=False,
                 capture_output=True,
                 check=False,
             )
             if r.returncode == 0:
                 return "docker"
-            raise OSError("Docker found but raycloudtools image not pulled.\n")
-        raise OSError("raycloudtools not found")
+            raise OSError(
+                "Docker found but raycloudtools image not pulled.\n"
+            )
+        raise OSError(
+            "raycloudtools not found"
+        )
 
     def _run(self, cmd: list, workdir: str):
         if self._backend == "docker":
+            def to_container(arg):
+                if not os.path.isabs(arg):
+                    return arg
+                if self._container_name:
+                    if self._shared_tmpdir is None:
+                        raise RuntimeError("Shared temporary directory is not initialized")
+                    rel = os.path.relpath(arg, self._shared_tmpdir)
+                    return "/data/" + rel
+                return "/data/" + os.path.basename(arg)
+
             if self._container_name:
-
-                def to_running_container(arg):
-                    if os.path.isabs(arg):
-                        rel = os.path.relpath(arg, self._shared_tmpdir)
-                        return "/data/" + rel
-                    return arg
-
-                cmd = ["docker", "exec", self._container_name] + [
-                    to_running_container(a) for a in cmd
-                ]
+                cmd = ["docker", "exec", self._container_name] + \
+                    [to_container(a) for a in cmd]
             else:
-
-                def to_ephemeral_container(arg):
-                    if os.path.isabs(arg):
-                        return "/data/" + os.path.basename(arg)
-                    return arg
-
                 cmd = [
                     "docker",
                     "run",
@@ -194,11 +189,7 @@ class TreeSegmRay:
                 ] + [to_ephemeral_container(a) for a in cmd]
 
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=workdir,
-            check=False,
+            cmd, check=False, capture_output=True, text=True, cwd=workdir,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -211,11 +202,11 @@ class TreeSegmRay:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _write_raycloud_ply(points: NDArray, path: str):
-        n = len(points)
-        pts = points.astype(np.float32)
-        nxyz = np.tile(np.array([0, 0, 10], dtype=np.float32), (n, 1))
-        times = np.zeros(n, dtype=np.float64)
+    def _write_raycloud_ply(points: np.ndarray, path: str, rays: np.ndarray | None = None):
+        n      = len(points)
+        pts    = points.astype(np.float32)
+        nxyz   = rays.astype(np.float32) if rays is not None else np.tile(np.array([0, 0, 10], dtype=np.float32), (n, 1))
+        times  = np.zeros(n, dtype=np.float64)
         colors = np.full((n, 4), 128, dtype=np.uint8)
 
         with open(path, "wb") as f:
@@ -259,9 +250,7 @@ class TreeSegmRay:
                 ).encode("ascii")
             )
             f.write(verts.tobytes())
-            f.writelines(
-                struct.pack("<B3i", 3, face[0], face[1], face[2]) for face in faces
-            )
+            f.writelines(struct.pack("<B3i", 3, face[0], face[1], face[2]) for face in faces)
 
     @staticmethod
     def _read_labels_from_segmented_ply(path: str) -> NDArray:
@@ -359,8 +348,8 @@ class TreeSegmRay:
         )
 
         tilt_tolerance = np.tan(np.deg2rad(max_tilt_deg))
-        result = tree_labels.copy()
-        kdtree = KDTree(grounded_centroids)
+        result  = tree_labels.copy()
+        kdtree  = KDTree(grounded_centroids)
 
         for i, lbl in enumerate(floating):
             fc = floating_centroids[i]
@@ -381,7 +370,7 @@ class TreeSegmRay:
 
         return result
 
-    def _reduce_labels(self, labels: NDArray) -> NDArray:
+    def _reduce_labels(self, labels: np.ndarray) -> np.ndarray:
         valid_mask = labels != -1
         _, labels[valid_mask] = np.unique(
             labels[valid_mask],
@@ -400,9 +389,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _connected_components_voxel(
-        xyz: NDArray[np.float32],
+        xyz: np.ndarray,
         voxel_size: float = 0.3,
-    ) -> tuple[NDArray[np.int32], NDArray[np.float32], NDArray[np.float32]]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Cluster a dense voxel grid using 26-neighbour connectivity.
 
         Returns per-point labels, cluster minimum heights, and cluster XY
@@ -429,7 +418,7 @@ class TreeSegmRay:
             point_voxels[:, 1],
             point_voxels[:, 2],
         ] = True
-        labeled_grid, n_clusters = ndimage_label(  # type: ignore[misc]
+        labeled_grid, n_clusters = ndimage_label(
             occupied_grid,
             structure=np.ones((3, 3, 3), dtype=bool),
         )
@@ -459,9 +448,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _segment_xy_connected_components(
-        xyz: NDArray[np.float32],
+        xyz: np.ndarray,
         voxel_size: float = 0.5,
-    ) -> NDArray[np.int32]:
+    ) -> np.ndarray:
         """Segment points by 8-connected occupied cells in the XY plane."""
         if len(xyz) == 0:
             return np.zeros(0, dtype=np.int32)
@@ -475,7 +464,7 @@ class TreeSegmRay:
         grid_shape = tuple(int(axis_size) for axis_size in point_cells.max(axis=0) + 1)
         occupied_grid = np.zeros(grid_shape, dtype=bool)
         occupied_grid[point_cells[:, 0], point_cells[:, 1]] = True
-        labeled_grid, _ = ndimage_label(  # type: ignore[misc]
+        labeled_grid, _ = ndimage_label(
             occupied_grid,
             structure=np.ones((3, 3), dtype=bool),
         )
@@ -487,13 +476,13 @@ class TreeSegmRay:
     @classmethod
     def _filter_floating_clusters(
         cls,
-        xyz: NDArray[np.float32],
-        ground_xyz: NDArray[np.float32] | None = None,
+        xyz: np.ndarray,
+        ground_xyz: np.ndarray | None = None,
         voxel_size: float = 0.5,
         max_gap: float = 0.4,
         boundary_margin: float = 0.5,
         nearest_ground_points: int = 10,
-    ) -> NDArray[np.bool_]:
+    ) -> np.ndarray:
         """Return a point mask that excludes components floating above ground."""
         if len(xyz) == 0:
             return np.zeros(0, dtype=bool)
@@ -548,9 +537,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _remove_partial_trunks(
-        xyz: NDArray[np.float32],
-        cluster_ids: NDArray[np.int32],
-    ) -> NDArray[np.bool_]:
+        xyz: np.ndarray,
+        cluster_ids: np.ndarray,
+    ) -> np.ndarray:
         """Diagnose clusters and exclude vertically linear trunk fragments."""
         if len(xyz) != len(cluster_ids):
             raise ValueError("xyz and cluster_ids must have the same length")
@@ -580,44 +569,32 @@ class TreeSegmRay:
 
             covariances = np.empty((len(eligible_ids), 3, 3), dtype=np.float64)
             covariances[:, 0, 0] = (
-                np.bincount(cluster_ids, weights=x * x, minlength=cluster_count)[
-                    eligible_ids
-                ]
+                np.bincount(cluster_ids, weights=x * x, minlength=cluster_count)[eligible_ids]
                 / eligible_counts
                 - means[:, 0] ** 2
             )
             covariances[:, 0, 1] = covariances[:, 1, 0] = (
-                np.bincount(cluster_ids, weights=x * y, minlength=cluster_count)[
-                    eligible_ids
-                ]
+                np.bincount(cluster_ids, weights=x * y, minlength=cluster_count)[eligible_ids]
                 / eligible_counts
                 - means[:, 0] * means[:, 1]
             )
             covariances[:, 0, 2] = covariances[:, 2, 0] = (
-                np.bincount(cluster_ids, weights=x * z, minlength=cluster_count)[
-                    eligible_ids
-                ]
+                np.bincount(cluster_ids, weights=x * z, minlength=cluster_count)[eligible_ids]
                 / eligible_counts
                 - means[:, 0] * means[:, 2]
             )
             covariances[:, 1, 1] = (
-                np.bincount(cluster_ids, weights=y * y, minlength=cluster_count)[
-                    eligible_ids
-                ]
+                np.bincount(cluster_ids, weights=y * y, minlength=cluster_count)[eligible_ids]
                 / eligible_counts
                 - means[:, 1] ** 2
             )
             covariances[:, 1, 2] = covariances[:, 2, 1] = (
-                np.bincount(cluster_ids, weights=y * z, minlength=cluster_count)[
-                    eligible_ids
-                ]
+                np.bincount(cluster_ids, weights=y * z, minlength=cluster_count)[eligible_ids]
                 / eligible_counts
                 - means[:, 1] * means[:, 2]
             )
             covariances[:, 2, 2] = (
-                np.bincount(cluster_ids, weights=z * z, minlength=cluster_count)[
-                    eligible_ids
-                ]
+                np.bincount(cluster_ids, weights=z * z, minlength=cluster_count)[eligible_ids]
                 / eligible_counts
                 - means[:, 2] ** 2
             )
@@ -635,29 +612,10 @@ class TreeSegmRay:
             z_alignment[eligible_ids] = np.abs(eigenvectors[:, 2, 2])
 
         is_trunk = (counts >= 100) & (linearity >= 0.55) & (z_alignment >= 0.70)
-
-        # point_order = np.argsort(cluster_ids, kind="stable")
-        # ordered_xyz = xyz[point_order]
-        # cluster_ends = np.cumsum(counts)
-        # cluster_starts = cluster_ends - counts
-        # for cluster_id in np.flatnonzero(counts):
-        #     cluster_xyz = ordered_xyz[
-        #         cluster_starts[cluster_id]:cluster_ends[cluster_id]
-        #     ]
-        #     print(
-        #         f"cluster_id: {cluster_id}\n"
-        #         f"point_count: {counts[cluster_id]}\n"
-        #         f"linearity: {linearity[cluster_id]:.6g}\n"
-        #         "principal_axis_z_alignment: "
-        #         f"{z_alignment[cluster_id]:.6g}\n"
-        #         f"is_trunk: {is_trunk[cluster_id]}"
-        #     )
-        #     plot_cloud(cluster_xyz, title=f"Cluster {cluster_id}")
-
         return ~is_trunk[cluster_ids]
 
     @staticmethod
-    def _estimate_ground(tree_xyz: NDArray, grid_size: float = 2.0) -> NDArray:
+    def _estimate_ground(tree_xyz: np.ndarray, grid_size: float = 2.0) -> np.ndarray:
         if tree_xyz.shape[0] == 0:
             return np.zeros((0, 3), dtype=np.float32)
 
@@ -727,9 +685,8 @@ class TreeSegmRay:
             return
         r = subprocess.run(
             ["docker", "inspect", "-f", "{{.State.Status}}", self._container_name],
-            capture_output=True,
-            text=True,
             check=False,
+            capture_output=True, text=True
         )
         status = r.stdout.strip()
         if r.returncode != 0 or status != "running":
@@ -813,7 +770,7 @@ class TreeSegmRay:
             return tree_ids.copy()
 
         positions = np.array([trunk_xy[tid] for tid in valid_ids], dtype=np.float64)
-        pairs = KDTree(positions).query_pairs(r=min_trunk_dist, output_type="ndarray")
+        pairs     = KDTree(positions).query_pairs(r=min_trunk_dist, output_type="ndarray")
         if len(pairs) == 0:
             return tree_ids.copy()
 
@@ -863,8 +820,8 @@ class TreeSegmRay:
     ) -> NDArray:
         """2D watershed fallback on XY crown projection."""
         from scipy.ndimage import label
-        from skimage.feature import peak_local_max  # type: ignore[import-not-found]
-        from skimage.segmentation import watershed  # type: ignore[import-not-found]
+        from skimage.feature import peak_local_max
+        from skimage.segmentation import watershed
 
         xy = tree_xyz[:, :2]
         xy_min = xy.min(axis=0)
@@ -880,13 +837,11 @@ class TreeSegmRay:
 
         density_smooth = gaussian_filter(density, sigma=1.5)
 
-        coords = peak_local_max(
-            density_smooth, min_distance=int(1.5 / resolution), threshold_abs=5
-        )
-        mask = np.zeros(grid_shape, dtype=bool)
-        mask[tuple(coords.T)] = True
-        markers, _ = label(mask)  # type: ignore[misc]
-        ws_labels = watershed(-density_smooth, markers, mask=density > 0)
+        coords     = peak_local_max(density_smooth, min_distance=int(1.5 / resolution), threshold_abs=5)
+        mask       = np.zeros(grid_shape, dtype=bool)
+        mask[tuple(coords.T)] = True  # pyright: ignore[reportCallIssue, reportArgumentType]
+        markers, _ = label(mask)  # pyright: ignore[reportGeneralTypeIssues]
+        ws_labels  = watershed(-density_smooth, markers, mask=density > 0)  # pyright: ignore[reportGeneralTypeIssues]
 
         # map back to points
         point_labels = (
@@ -894,12 +849,11 @@ class TreeSegmRay:
         )  # 0-indexed, -1 = unlabelled
         return point_labels
 
-    def _segment_small(
-        self,
-        xyz: NDArray,
-        labels: NDArray | None = None,
-        debug: bool = False,
-    ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+    def _segment_small(self,
+                       xyz: np.ndarray,
+                       labels: np.ndarray | None = None,
+                       rays: np.ndarray | None = None,
+                       debug: bool = False) -> tuple[np.ndarray, np.ndarray]:
 
         self.start_container()
 
@@ -918,6 +872,8 @@ class TreeSegmRay:
             tree_xyz = xyz.copy()
             ground_xyz = None
             tree_mask = np.ones(len(xyz), dtype=bool)
+
+        tree_rays = rays[tree_mask].copy() if rays is not None else None
 
         if tree_xyz.shape[0] == 0:
             empty_ids = np.zeros(0, dtype=np.int32)
@@ -965,7 +921,7 @@ class TreeSegmRay:
         ground_ply = os.path.join(tmpdir, "ground.ply")
 
         try:
-            self._write_raycloud_ply(tree_xyz, cloud_ply)
+            self._write_raycloud_ply(tree_xyz, cloud_ply, rays=tree_rays)
             self._write_ground_mesh_ply(ground_xyz, ground_ply)
 
             cmd = [
@@ -991,8 +947,8 @@ class TreeSegmRay:
             if self.global_taper_factor is not None:
                 cmd += ["--global_taper_factor", str(self.global_taper_factor)]
             if self.grid_width is not None:
-                cmd += ["--grid_width", str(self.grid_width)]
-            if self.use_rays:
+                cmd += ["--grid_width",          str(self.grid_width)]
+            if self.use_rays and tree_rays is not None:
                 cmd.append("--use_rays")
             if self.segment_branches:
                 cmd.append("--branch_segmentation")
@@ -1040,6 +996,23 @@ class TreeSegmRay:
     ) -> NDArray[np.int32]:
         """Return shrub instance IDs for vegetation not assigned to a tree.
 
+        tree_instance_labels = tree_instance_labels.astype(np.int32, copy=False)
+        shrub_instance_labels = self._segment_shrubs(
+            tree_xyz, tree_instance_labels, ground_xyz=ground_xyz
+        )
+        return tree_instance_labels, shrub_instance_labels
+
+    def _segment_shrubs(
+        self,
+        tree_xyz: np.ndarray,
+        tree_ids: np.ndarray,
+        ground_xyz: np.ndarray | None = None,
+        xy_voxel_size: float = 0.5,
+        outlier_neighbors: int = 48,
+        outlier_std_ratio: float = 0.5,
+    ) -> np.ndarray:
+        """Return shrub instance IDs for vegetation not assigned to a tree.
+
         ``tree_xyz`` and ``tree_ids`` contain only points selected by the
         vegetation-class mask. Floating components and vertically elongated
         clusters are rejected and remain at shrub ID ``-1``.
@@ -1061,9 +1034,6 @@ class TreeSegmRay:
         shrub_point_indices = np.flatnonzero(tree_ids == -1)
         shrub_xyz = tree_xyz[shrub_point_indices]
         if len(shrub_xyz) <= 1:
-            return shrub_ids
-
-        if len(shrub_xyz) == 0:
             return shrub_ids
 
         retained_mask = self._filter_floating_clusters(
@@ -1092,17 +1062,14 @@ class TreeSegmRay:
 
         shrub_instance_ids = self._reduce_labels(shrub_instance_ids)
         shrub_ids[shrub_point_indices] = shrub_instance_ids
-
-        # plot_cloud(shrub_xyz, shrub_instance_ids, title="Retained shrub points")
-
         return shrub_ids
 
     def _postprocess_tree_group(
         self,
-        tree_xyz: NDArray,
-        tree_ids: NDArray[np.int32],
-        shrub_ids: NDArray[np.int32],
-    ) -> NDArray[np.int32]:
+        tree_xyz: np.ndarray,
+        tree_ids: np.ndarray,
+        shrub_ids: np.ndarray,
+    ) -> np.ndarray:
         """Postprocess a Birch group only when it contains no shrubs."""
         if tree_xyz.shape[0] != tree_ids.shape[0] or tree_ids.shape != shrub_ids.shape:
             raise ValueError("Tree-group points, tree IDs, and shrub IDs must align")
@@ -1119,16 +1086,17 @@ class TreeSegmRay:
 
     def _segment_birch(
         self,
-        xyz: NDArray,
-        labels: NDArray,
-    ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
+        xyz: np.ndarray,
+        labels: np.ndarray,
+        rays: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         from sklearn.cluster import Birch
 
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
             empty_ids = np.full(0, -1, dtype=np.int32)
             return empty_ids, empty_ids.copy()
-
+        
         tree_xyz = xyz[tree_mask]
 
         n_clusters = int(tree_xyz.shape[0] / 4e6)
@@ -1221,12 +1189,15 @@ class TreeSegmRay:
             group_indices = np.concatenate(group_index_chunks)
             group_voxel = xyz[group_indices]
             group_voxel_labels = labels[group_indices]
+            group_voxel_rays = rays[group_indices] if rays is not None else None
             group_voxel_tree_mask = group_voxel_labels == self.tree_label
 
             self.rm_container()
             try:
                 tree_ids_voxel, shrub_ids_voxel = self._segment_small(
-                    group_voxel, group_voxel_labels
+                    group_voxel,
+                    group_voxel_labels,
+                    rays=group_voxel_rays,
                 )
             except Exception:  # noqa: BLE001
                 max_tree_dim = 3.0
@@ -1287,6 +1258,7 @@ class TreeSegmRay:
                 group_indices,
                 group_voxel,
                 group_voxel_labels,
+                group_voxel_rays,
                 tree_ids_voxel,
                 shrub_ids_voxel,
             )
@@ -1325,9 +1297,9 @@ class TreeSegmRay:
 
     @staticmethod
     def _merge_instance_ids(
-        tree_ids: NDArray,
-        shrub_ids: NDArray,
-    ) -> tuple[NDArray[np.int32], NDArray[np.int8]]:
+        tree_ids: np.ndarray,
+        shrub_ids: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
         if tree_ids.shape != shrub_ids.shape:
             raise ValueError(
                 "tree_ids and shrub_ids shape mismatch: "
@@ -1364,286 +1336,82 @@ class TreeSegmRay:
         initial_model_species[shrub_mask] = 17
         return merged_instance_ids, initial_model_species
 
-    def segment(
-        self,
-        xyz: NDArray,
-        labels: NDArray,
-    ) -> tuple[NDArray[np.int32], NDArray[np.int8]]:
+
+    def segment(self, xyz: np.ndarray, labels: np.ndarray, rays: np.ndarray | None = None,
+                gps_time: np.ndarray | None = None, point_source_id: np.ndarray | None = None,
+                scan_angle_deg: np.ndarray | None = None,
+                scan_angle_rank: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
         full_shrub_ids = np.full(len(xyz), -1, dtype=np.int32)
         if xyz.shape[0] == 0:
             return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
         if xyz.shape[0] != labels.shape[0]:
-            raise ValueError(
-                f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}"
-            )
+            raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
 
+        if rays is not None:
+            rays = np.asarray(rays)
+            if rays.shape != xyz.shape:
+                raise ValueError(
+                    f"rays must have the same shape as xyz: {rays.shape} != {xyz.shape}"
+                )
+        
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
             return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
 
+        if self.use_rays and rays is None:
+            if scan_angle_deg is not None and scan_angle_rank is not None:
+                raise ValueError(
+                    "Provide scan angles using either scan_angle_deg or "
+                    "scan_angle_rank, not both"
+                )
+            if scan_angle_deg is None:
+                scan_angle_deg = scan_angle_rank
+            rays = get_rays(
+                x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2],
+                gps_time=gps_time,
+                point_source_id=point_source_id,
+                scan_angle_deg=scan_angle_deg,
+            )
+            if rays is None and self.verbose:
+                tqdm.write("[rays] Flight data unavailable; continuing without rays")
+
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
+
         if xyz[tree_mask].shape[0] > 1e7:  # threshold checked
-            tree_ids, shrub_ids = self._segment_birch(xyz.copy(), labels)
+            tree_ids, shrub_ids = self._segment_birch(
+                xyz.copy(), labels, rays=rays
+            )
+
         else:
-            tree_ids, shrub_ids = self._segment_small(xyz, labels)
+            tree_ids, shrub_ids = self._segment_small(xyz, labels, rays=rays)
         full_tree_ids[tree_mask] = tree_ids
         full_shrub_ids[tree_mask] = shrub_ids
-
         return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
 
 
-def test_merge_instance_ids_offsets_shrubs_after_max_tree_id():
-    tree_ids = np.array([-1, 0, 2, -1, -1, -1], dtype=np.int32)
-    shrub_ids = np.array([-1, -1, -1, 0, 2, -1], dtype=np.int32)
-
-    instance_ids, species = TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
-
-    assert instance_ids.tolist() == [-1, 0, 2, 3, 5, -1]
-    assert species.tolist() == [-1, -1, -1, 17, 17, -1]
-
-
-def test_segment_shrubs_contract():
-    tree_xyz = np.zeros((3, 3), dtype=np.float32)
-    tree_ids = np.array([0, -1, 1], dtype=np.int32)
-
-    segmenter = TreeSegmRay.__new__(TreeSegmRay)
-    shrub_ids = segmenter._segment_shrubs(tree_xyz=tree_xyz, tree_ids=tree_ids)
-
-    assert shrub_ids.shape == tree_ids.shape
-    assert shrub_ids.dtype == np.int32
-    assert np.all(shrub_ids[tree_ids >= 0] == -1)
-
-
-def test_postprocess_tree_group_skips_groups_with_shrubs():
-    segmenter = TreeSegmRay.__new__(TreeSegmRay)
-    tree_xyz = np.zeros((10, 3), dtype=np.float32)
-    tree_ids = np.array([-1, *([0] * 9)], dtype=np.int32)
-    shrub_ids = np.array([0, *([-1] * 9)], dtype=np.int32)
-
-    mixed_result = segmenter._postprocess_tree_group(
-        tree_xyz,
-        tree_ids.copy(),
-        shrub_ids,
-    )
-    tree_only_result = segmenter._postprocess_tree_group(
-        tree_xyz,
-        np.zeros(10, dtype=np.int32),
-        np.full(10, -1, dtype=np.int32),
-    )
-
-    assert mixed_result.tolist() == tree_ids.tolist()
-    assert np.all(tree_only_result == -1)
-
-
-def test_merge_instance_ids_shrub_only_starts_at_zero():
-    tree_ids = np.array([-1, -1, -1], dtype=np.int32)
-    shrub_ids = np.array([0, 2, -1], dtype=np.int32)
-
-    instance_ids, species = TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
-
-    assert instance_ids.tolist() == [0, 2, -1]
-    assert species.tolist() == [17, 17, -1]
-
-
-def test_merge_instance_ids_rejects_overlap():
-    tree_ids = np.array([0], dtype=np.int32)
-    shrub_ids = np.array([0], dtype=np.int32)
-
-    try:
-        TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
-    except ValueError as exc:
-        assert "both a tree and a shrub" in str(exc)
-    else:
-        raise AssertionError("Expected overlapping instance IDs to be rejected")
-
-
-def test_merge_instance_ids_rejects_shape_mismatch_and_int32_overflow():
-    try:
-        TreeSegmRay._merge_instance_ids(
-            np.array([-1], dtype=np.int32),
-            np.array([-1, -1], dtype=np.int32),
-        )
-    except ValueError as exc:
-        assert "shape mismatch" in str(exc)
-    else:
-        raise AssertionError("Expected mismatched shapes to be rejected")
-
-    try:
-        TreeSegmRay._merge_instance_ids(
-            np.array([np.iinfo(np.int32).max, -1], dtype=np.int64),
-            np.array([-1, 0], dtype=np.int32),
-        )
-    except OverflowError as exc:
-        assert "exceeds int32 range" in str(exc)
-    else:
-        raise AssertionError("Expected an overflowing shrub offset to be rejected")
-
-
-def test_merge_instance_ids_output_dtypes():
-    tree_ids = np.array([0, -1], dtype=np.int64)
-    shrub_ids = np.array([-1, 0], dtype=np.int64)
-
-    instance_ids, species = TreeSegmRay._merge_instance_ids(tree_ids, shrub_ids)
-
-    assert instance_ids.dtype == np.int32
-    assert species.dtype == np.int8
-
-
-def test_segment_empty_and_no_tree_return_point_aligned_defaults():
+def test_segment_does_not_generate_rays_when_disabled():
     segmenter = TreeSegmRay.__new__(TreeSegmRay)
     segmenter.tree_label = 7
+    segmenter.use_rays = False
+    segmenter.verbose = False
 
-    empty_ids, empty_species = segmenter.segment(
-        np.zeros((0, 3), dtype=np.float32),
-        np.zeros(0, dtype=np.int32),
-    )
-    no_tree_ids, no_tree_species = segmenter.segment(
-        np.zeros((3, 3), dtype=np.float32),
-        np.array([1, 2, 3], dtype=np.int32),
-    )
+    def segment_small(xyz, labels, rays=None):
+        assert rays is None
+        return np.array([0], dtype=np.int32), np.array([-1], dtype=np.int32)
 
-    assert empty_ids.shape == (0,)
-    assert empty_species.shape == (0,)
-    assert no_tree_ids.tolist() == [-1, -1, -1]
-    assert no_tree_species.tolist() == [-1, -1, -1]
-    assert empty_ids.dtype == no_tree_ids.dtype == np.int32
-    assert empty_species.dtype == no_tree_species.dtype == np.int8
-
-
-def test_connected_components_voxel_two_clusters():
-    rng = np.random.default_rng(42)
-    cluster_a = rng.uniform(0.0, 1.0, (50, 3)).astype(np.float32)
-    cluster_b = rng.uniform(10.0, 11.0, (30, 3)).astype(np.float32)
-    cluster_b[:, 2] += 5.0  # shift z so min_height differs
-    xyz = np.concatenate([cluster_a, cluster_b])
-
-    labels, min_heights, xy_bounds = TreeSegmRay._connected_components_voxel(
-        xyz,
-        voxel_size=0.3,
+    segmenter._segment_small = segment_small
+    instance_ids, species = segmenter.segment(
+        xyz=np.zeros((2, 3), dtype=np.float32),
+        labels=np.array([1, 7], dtype=np.int32),
+        gps_time=np.array([1.0]),
+        point_source_id=np.array([1]),
+        scan_angle_deg=np.array([10.0]),
     )
 
-    assert labels.shape == (80,)
-    assert labels.dtype == np.int32
-    assert len(np.unique(labels)) == 2
-    assert np.all(labels[:50] == labels[0])
-    assert np.all(labels[50:] == labels[50])
-    assert labels[0] != labels[50]
-
-    la, lb = labels[0], labels[50]
-    assert min_heights[la] < 1.1
-    assert min_heights[lb] > 14.0
-    assert xy_bounds.shape == (2, 4)
-    np.testing.assert_allclose(
-        xy_bounds[la],
-        [
-            cluster_a[:, 0].min(),
-            cluster_a[:, 1].min(),
-            cluster_a[:, 0].max(),
-            cluster_a[:, 1].max(),
-        ],
-    )
-    np.testing.assert_allclose(
-        xy_bounds[lb],
-        [
-            cluster_b[:, 0].min(),
-            cluster_b[:, 1].min(),
-            cluster_b[:, 0].max(),
-            cluster_b[:, 1].max(),
-        ],
-    )
-
-
-def test_segment_xy_connected_components_ignores_height():
-    xyz = np.array(
-        [
-            [0.1, 0.1, 0.0],
-            [0.6, 0.6, 10.0],
-            [3.0, 3.0, 0.0],
-        ],
-        dtype=np.float32,
-    )
-
-    labels = TreeSegmRay._segment_xy_connected_components(
-        xyz,
-        voxel_size=0.5,
-    )
-
-    assert labels.tolist() == [0, 0, 1]
-
-
-def test_remove_partial_trunks_filters_vertical_linear_cluster():
-    point_count = 120
-    heights = np.linspace(0.0, 1.0, point_count, dtype=np.float32)
-    trunk = np.column_stack(
-        (
-            np.sin(heights) * 0.02,
-            np.cos(heights) * 0.02,
-            heights,
-        )
-    ).astype(np.float32)
-    shrub = np.column_stack(
-        (
-            np.linspace(2.0, 4.0, point_count, dtype=np.float32),
-            np.tile(np.array([0.0, 1.0], dtype=np.float32), point_count // 2),
-            np.tile(np.array([0.0, 0.2], dtype=np.float32), point_count // 2),
-        )
-    )
-    xyz = np.concatenate((trunk, shrub))
-    cluster_ids = np.repeat(np.array([0, 1], dtype=np.int32), point_count)
-
-    retained_mask = TreeSegmRay._remove_partial_trunks(xyz, cluster_ids)
-
-    assert retained_mask.dtype == np.bool_
-    assert not retained_mask[:point_count].any()
-    assert retained_mask[point_count:].all()
-
-
-def test_connected_components_voxel_empty():
-    labels, min_h, xy_bounds = TreeSegmRay._connected_components_voxel(
-        np.zeros((0, 3), dtype=np.float32),
-    )
-    assert labels.shape == (0,)
-    assert min_h.shape == (0,)
-    assert xy_bounds.shape == (0, 4)
-
-
-def test_filter_floating_clusters_uses_bounds_and_nearest_ground_mean():
-    xyz = np.array(
-        [
-            [0.0, 0.0, 0.5],
-            [10.0, 10.0, 3.0],
-        ],
-        dtype=np.float32,
-    )
-    ground_xyz = np.array(
-        [
-            [0.0, 0.0, 0.0],
-            [9.0, 10.0, 0.0],
-            [10.0, 9.0, 0.0],
-        ],
-        dtype=np.float32,
-    )
-
-    retained_mask = TreeSegmRay._filter_floating_clusters(
-        xyz,
-        ground_xyz=ground_xyz,
-        voxel_size=0.5,
-        max_gap=1.0,
-        nearest_ground_points=2,
-    )
-
-    assert retained_mask.tolist() == [True, False]
-
-
-def test_reduce_labels_removes_gaps_without_discarding_zero():
-    segmenter = TreeSegmRay.__new__(TreeSegmRay)
-    labels = np.array([-1, 4, 4, 9], dtype=np.int32)
-
-    reduced = segmenter._reduce_labels(labels)
-
-    assert reduced.tolist() == [-1, 0, 0, 1]
+    assert instance_ids.tolist() == [-1, 0]
+    assert species.tolist() == [-1, -1]
 
 
 # ---------------------------------------------------------------------------
@@ -1652,26 +1420,45 @@ def test_reduce_labels_removes_gaps_without_discarding_zero():
 
 
 def main():
+    from pathlib import Path
+
     import laspy
 
-    from .utils.plot_cloud import plot_cloud
+    try:
+        from utils.plot_cloud import plot_cloud
+        from utils.save_laz import save_laz
+    except ImportError:
+        try:
+            from .utils.plot_cloud import plot_cloud
+            from .utils.save_laz import save_laz
+        except ImportError:
+            from .src.utils.plot_cloud import plot_cloud
+            from .src.utils.save_laz import save_laz
 
-    seg = TreeSegmRay(ground_label=1, tree_label=7, verbose=True)
+    seg = TreeSegmRay(ground_label=1,
+                      tree_label=7, verbose=True)
 
-    seg = TreeSegmRay.from_config(
-        cfg_path="src/final_files/config_RE.json", verbose=True
-    )
+    seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
+    test_path =[Path("/Users/michalsiniarski/Documents/PROGRAMMING/Tree-Clustering/fixtures/Grajewo_2026_6_1_mod.laz")]
 
-    for path in [
-        "/Users/michalsiniarski/Documents/PROGRAMMING/BRIK-data-processing/src/TreeClustering/fixtures/BIG_CLOUD.laz"
-    ]:
-        las = laspy.read(path)
-        xyz = np.column_stack((np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)))
+    for path in test_path:
+        las    = laspy.read(path)
+        xyz    = np.vstack([np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)]).T
         labels = np.asarray(las.classification)
 
-        _merged_instance_ids, _initial_model_species = seg.segment(xyz, labels)
+        # plot_cloud(xyz[labels == seg.tree_label])
 
-        plot_cloud(xyz, _merged_instance_ids)
+        ray_inputs = get_las_ray_inputs(las, use_rays=seg.use_rays)
+
+        instance_ids, _initial_model_species = seg.segment(
+            xyz, labels,
+            **ray_inputs,
+        )
+
+        save_laz(las, instance_ids, path.with_name(f"{path.stem}_segmented.laz"))
+
+        for instance_id in np.unique(instance_ids[instance_ids >= 0]):
+            plot_cloud(xyz[instance_ids == instance_id])
 
 
 if __name__ == "__main__":
