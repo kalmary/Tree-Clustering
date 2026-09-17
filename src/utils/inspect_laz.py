@@ -65,7 +65,7 @@ def inspect_laz_for_rays(file_path: Path):
             logger.info("Checking standard fields for ray estimation:")
             logger.info(f" - gps_time: {'Present' if has_gps_time else 'Missing'}")
             logger.info(f" - point_source_id: {'Present' if has_pt_src_id else 'Missing'}")
-            logger.info(f" - scan_angle_rank: {'Present' if has_scan_angle else 'Missing'}")
+            logger.info(f" - scan angle: {'Present' if has_scan_angle else 'Missing'}")
             
             if has_gps_time and has_pt_src_id:
                 logger.info("Verdict: The file has 'gps_time' and 'point_source_id'.")
