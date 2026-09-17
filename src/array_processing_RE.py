@@ -15,12 +15,12 @@ from typing import Any
 # from pprint import pprint
 
 try:
-    from utils import get_rays
+    from utils import get_las_ray_inputs, get_rays
 except ImportError:
     try:
-        from .utils import get_rays
+        from .utils import get_las_ray_inputs, get_rays
     except ImportError:
-        from .src.utils import get_rays
+        from .src.utils import get_las_ray_inputs, get_rays
 
 import numpy as np
 from scipy.spatial import Delaunay, KDTree
@@ -1221,6 +1221,7 @@ class TreeSegmRay:
 
     def segment(self, xyz: np.ndarray, labels: np.ndarray, rays: np.ndarray | None = None,
                 gps_time: np.ndarray | None = None, point_source_id: np.ndarray | None = None,
+                scan_angle_deg: np.ndarray | None = None,
                 scan_angle_rank: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
         full_shrub_ids = np.full(len(xyz), -1, dtype=np.int32)
@@ -1228,17 +1229,31 @@ class TreeSegmRay:
             return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
         if xyz.shape[0] != labels.shape[0]:
             raise ValueError(f"xyz and labels length mismatch: {xyz.shape[0]} != {labels.shape[0]}")
+
+        if rays is not None:
+            rays = np.asarray(rays)
+            if rays.shape != xyz.shape:
+                raise ValueError(
+                    f"rays must have the same shape as xyz: {rays.shape} != {xyz.shape}"
+                )
         
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
             return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
 
         if self.use_rays and rays is None:
+            if scan_angle_deg is not None and scan_angle_rank is not None:
+                raise ValueError(
+                    "Provide scan angles using either scan_angle_deg or "
+                    "scan_angle_rank, not both"
+                )
+            if scan_angle_deg is None:
+                scan_angle_deg = scan_angle_rank
             rays = get_rays(
                 x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2],
                 gps_time=gps_time,
                 point_source_id=point_source_id,
-                scan_angle_rank=scan_angle_rank,
+                scan_angle_deg=scan_angle_deg,
             )
             if rays is None and self.verbose:
                 tqdm.write("[rays] Flight data unavailable; continuing without rays")
@@ -1256,6 +1271,29 @@ class TreeSegmRay:
         full_tree_ids[tree_mask] = tree_ids
         full_shrub_ids[tree_mask] = shrub_ids
         return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
+
+
+def test_segment_does_not_generate_rays_when_disabled():
+    segmenter = TreeSegmRay.__new__(TreeSegmRay)
+    segmenter.tree_label = 7
+    segmenter.use_rays = False
+    segmenter.verbose = False
+
+    def segment_small(xyz, labels, rays=None):
+        assert rays is None
+        return np.array([0], dtype=np.int32), np.array([-1], dtype=np.int32)
+
+    segmenter._segment_small = segment_small
+    instance_ids, species = segmenter.segment(
+        xyz=np.zeros((2, 3), dtype=np.float32),
+        labels=np.array([1, 7], dtype=np.int32),
+        gps_time=np.array([1.0]),
+        point_source_id=np.array([1]),
+        scan_angle_deg=np.array([10.0]),
+    )
+
+    assert instance_ids.tolist() == [-1, 0]
+    assert species.tolist() == [-1, -1]
 
 
 # ---------------------------------------------------------------------------
@@ -1289,17 +1327,19 @@ def main():
         xyz    = np.vstack([np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)]).T
         labels = np.asarray(las.classification)
 
+        # plot_cloud(xyz[labels == seg.tree_label])
+
+        ray_inputs = get_las_ray_inputs(las, use_rays=seg.use_rays)
+
         instance_ids, _initial_model_species = seg.segment(
             xyz, labels,
-            gps_time=np.asarray(las.gps_time),
-            point_source_id=np.asarray(las.point_source_id),
-            scan_angle_rank=np.asarray(las.scan_angle_rank),
+            **ray_inputs,
         )
 
         save_laz(las, instance_ids, path.with_name(f"{path.stem}_segmented.laz"))
 
-        for tree_xyz in [xyz[labels == tree_label] for tree_label in np.unique(labels) if tree_label != -1]:
-            plot_cloud(tree_xyz)
+        for instance_id in np.unique(instance_ids[instance_ids >= 0]):
+            plot_cloud(xyz[instance_ids == instance_id])
 
 
 if __name__ == "__main__":
