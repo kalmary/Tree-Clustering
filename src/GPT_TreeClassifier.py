@@ -1,10 +1,13 @@
-import re
-import torch
-from torchvision import transforms
 import base64
+import re
 from io import BytesIO
-from openai import OpenAI
+from typing import ClassVar
+
 import numpy as np
+import torch
+from openai import OpenAI
+from torchvision import transforms
+
 
 class DummyClassifier:
     def predict(self, cloud: np.ndarray) -> int:
@@ -12,7 +15,7 @@ class DummyClassifier:
 
 class LLM_Classifier:
     
-    VIEW_NAMES = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
+    VIEW_NAMES: ClassVar[list[str]] = ["TOP", "FRONT", "BACK", "LEFT", "RIGHT"]
 
     # Bump the version suffix whenever the static prefix (system prompt + species list) changes.
 
@@ -311,19 +314,19 @@ class LLM_Classifier:
                 "detail": "low",  # must stay identical across calls
             })
 
-        request_kwargs = dict(
-            model=self.model,
-            temperature=0,
-            input=[
+        request_kwargs = {
+            "model": self.model,
+            "temperature": 0,
+            "input": [
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": content},
             ],
-            prompt_cache_key=self.PROMPT_CACHE_KEY,
-        )
+            "prompt_cache_key": self.PROMPT_CACHE_KEY,
+        }
         if self.prompt_cache_retention is not None:
             request_kwargs["prompt_cache_retention"] = self.prompt_cache_retention
 
-        response = self.client.responses.create(**request_kwargs)
+        response = self.client.responses.create(**request_kwargs)  # pyright: ignore[reportOptionalMemberAccess]
 
         if hasattr(response, "usage") and response.usage is not None:
             self.prompt_tokens += response.usage.input_tokens or 0
@@ -356,7 +359,7 @@ class LLM_Classifier:
         try:
             # raise ValueError("Test exception")
             key = self.api_call(images_b64)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"API call failed: {e}")
             key = 16
         return key

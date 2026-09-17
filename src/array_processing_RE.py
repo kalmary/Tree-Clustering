@@ -14,6 +14,11 @@ from numpy.typing import NDArray
 from scipy.spatial import Delaunay, KDTree
 from tqdm import tqdm
 
+try:
+    from utils.get_rays import get_las_ray_inputs, get_rays
+except ImportError:
+    from .utils.get_rays import get_las_ray_inputs, get_rays
+
 # @dataclass
 # class TreeSegmRayConfig:
 #     height_min:          float         = 2.0
@@ -936,6 +941,8 @@ class TreeSegmRay:
             ground_xyz = None
             tree_mask = np.ones(len(xyz), dtype=bool)
 
+        tree_rays = rays[tree_mask].copy() if rays is not None else None
+
         if tree_xyz.shape[0] == 0:
             empty_ids = np.zeros(0, dtype=np.int32)
             return empty_ids, empty_ids.copy()
@@ -1389,6 +1396,10 @@ class TreeSegmRay:
         xyz: NDArray,
         labels: NDArray,
         rays: NDArray | None = None,
+        gps_time: NDArray | None = None,
+        point_source_id: NDArray | None = None,
+        scan_angle_deg: NDArray | None = None,
+        scan_angle_rank: NDArray | None = None,
     ) -> tuple[NDArray[np.int32], NDArray[np.int8]]:
         xyz = np.asarray(xyz)
         if xyz.ndim != 2 or xyz.shape[1] not in {3, 6, 7}:
@@ -1418,6 +1429,25 @@ class TreeSegmRay:
         tree_mask = labels == self.tree_label
         if tree_mask.sum() == 0:
             return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
+
+        if rays is None and self.use_rays:
+            if scan_angle_deg is not None and scan_angle_rank is not None:
+                raise ValueError(
+                    "Provide scan angles using either scan_angle_deg or "
+                    "scan_angle_rank, not both"
+                )
+            if scan_angle_deg is None:
+                scan_angle_deg = scan_angle_rank
+            rays = get_rays(
+                x=xyz[:, 0],
+                y=xyz[:, 1],
+                z=xyz[:, 2],
+                gps_time=gps_time,
+                point_source_id=point_source_id,
+                scan_angle_deg=scan_angle_deg,
+            )
+            if rays is None and self.verbose:
+                tqdm.write("[rays] Flight data unavailable; continuing without rays")
 
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
@@ -1775,15 +1805,45 @@ def test_reduce_labels_removes_gaps_without_discarding_zero():
     assert reduced.tolist() == [-1, 0, 0, 1]
 
 
+def test_segment_does_not_generate_rays_when_disabled():
+    segmenter = TreeSegmRay.__new__(TreeSegmRay)
+    segmenter.tree_label = 7
+    segmenter.use_rays = False
+    segmenter.verbose = False
+
+    def segment_small(xyz, labels=None, rays=None, debug=False):
+        assert rays is None
+        return np.array([0], dtype=np.int32), np.array([-1], dtype=np.int32)
+
+    segmenter._segment_small = segment_small
+    instance_ids, species = segmenter.segment(
+        xyz=np.zeros((2, 3), dtype=np.float32),
+        labels=np.array([1, 7], dtype=np.int32),
+        gps_time=np.array([1.0]),
+        point_source_id=np.array([1]),
+        scan_angle_deg=np.array([10.0]),
+    )
+
+    assert instance_ids.tolist() == [-1, 0]
+    assert species.tolist() == [-1, -1]
+
+
 # ---------------------------------------------------------------------------
 # Example
 # ---------------------------------------------------------------------------
 
 
 def main():
+    from pathlib import Path
+
     import laspy
 
-    from .utils.plot_cloud import plot_cloud
+    try:
+        from utils.plot_cloud import plot_cloud
+        from utils.save_laz import save_laz
+    except ImportError:
+        from .utils.plot_cloud import plot_cloud
+        from .utils.save_laz import save_laz
 
     seg = TreeSegmRay(ground_label=1, tree_label=7, verbose=True)
 
@@ -1792,14 +1852,23 @@ def main():
     )
 
     for path in [
-        "/Users/michalsiniarski/Documents/PROGRAMMING/BRIK-data-processing/src/TreeClustering/fixtures/BIG_CLOUD.laz"
+        Path(
+            "/Users/michalsiniarski/Documents/PROGRAMMING/BRIK-data-processing/"
+            "src/TreeClustering/fixtures/BIG_CLOUD.laz"
+        )
     ]:
         las = laspy.read(path)
         xyz = np.column_stack((np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)))
         labels = np.asarray(las.classification)
 
-        _merged_instance_ids, _initial_model_species = seg.segment(xyz, labels)
+        ray_inputs = get_las_ray_inputs(las, use_rays=seg.use_rays)
+        _merged_instance_ids, _initial_model_species = seg.segment(
+            xyz,
+            labels,
+            **ray_inputs,
+        )
 
+        save_laz(las, _merged_instance_ids, path.with_name(f"{path.stem}_segmented.laz"))
         plot_cloud(xyz, _merged_instance_ids)
 
 
