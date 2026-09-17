@@ -211,12 +211,25 @@ class TreeSegmRay:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _write_raycloud_ply(points: NDArray, path: str):
+    def _write_raycloud_ply(
+        points: NDArray,
+        path: str,
+        rays: NDArray | None = None,
+    ):
         n = len(points)
         pts = points.astype(np.float32)
-        nxyz = np.tile(np.array([0, 0, 10], dtype=np.float32), (n, 1))
+        if rays is not None:
+            rays = np.asarray(rays, dtype=np.float32)
+            if rays.shape != (n, 3):
+                raise ValueError(f"rays must have shape {(n, 3)}, not {rays.shape}")
         times = np.zeros(n, dtype=np.float64)
         colors = np.full((n, 4), 128, dtype=np.uint8)
+
+        ray_properties = (
+            "property float nx\nproperty float ny\nproperty float nz\n"
+            if rays is not None
+            else ""
+        )
 
         with open(path, "wb") as f:
             f.write(
@@ -226,7 +239,7 @@ class TreeSegmRay:
                     f"element vertex {n:010d}\n"
                     "property float x\nproperty float y\nproperty float z\n"
                     "property double time\n"
-                    "property float nx\nproperty float ny\nproperty float nz\n"
+                    f"{ray_properties}"
                     "property uchar red\nproperty uchar green\n"
                     "property uchar blue\nproperty uchar alpha\nend_header\n"
                 ).encode("ascii")
@@ -234,7 +247,8 @@ class TreeSegmRay:
             for i in range(n):
                 f.write(pts[i].tobytes())
                 f.write(times[i].tobytes())
-                f.write(nxyz[i].tobytes())
+                if rays is not None:
+                    f.write(rays[i].tobytes())
                 f.write(colors[i].tobytes())
 
     @staticmethod
@@ -898,6 +912,7 @@ class TreeSegmRay:
         self,
         xyz: NDArray,
         labels: NDArray | None = None,
+        rays: NDArray | None = None,
         debug: bool = False,
     ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
 
@@ -913,9 +928,11 @@ class TreeSegmRay:
             tree_mask = labels == self.tree_label
             ground_mask = labels == self.ground_label
             tree_xyz = xyz[tree_mask].copy()
+            tree_rays = rays[tree_mask] if rays is not None else None
             ground_xyz = xyz[ground_mask].copy()
         else:
             tree_xyz = xyz.copy()
+            tree_rays = rays.copy() if rays is not None else None
             ground_xyz = None
             tree_mask = np.ones(len(xyz), dtype=bool)
 
@@ -965,7 +982,7 @@ class TreeSegmRay:
         ground_ply = os.path.join(tmpdir, "ground.ply")
 
         try:
-            self._write_raycloud_ply(tree_xyz, cloud_ply)
+            self._write_raycloud_ply(tree_xyz, cloud_ply, tree_rays)
             self._write_ground_mesh_ply(ground_xyz, ground_ply)
 
             cmd = [
@@ -992,7 +1009,7 @@ class TreeSegmRay:
                 cmd += ["--global_taper_factor", str(self.global_taper_factor)]
             if self.grid_width is not None:
                 cmd += ["--grid_width", str(self.grid_width)]
-            if self.use_rays:
+            if self.use_rays and tree_rays is not None:
                 cmd.append("--use_rays")
             if self.segment_branches:
                 cmd.append("--branch_segmentation")
@@ -1121,6 +1138,7 @@ class TreeSegmRay:
         self,
         xyz: NDArray,
         labels: NDArray,
+        rays: NDArray | None = None,
     ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
         from sklearn.cluster import Birch
 
@@ -1139,7 +1157,7 @@ class TreeSegmRay:
             unit="step",
             total=1,
             leave=False,
-            position=1,
+            position=2,
             disable=not self.verbose,
         ) as pbar:
             tree_xyz_lr_mask = self.voxel_subsample_vectorized(tree_xyz, voxel_size=0.3)
@@ -1151,7 +1169,7 @@ class TreeSegmRay:
         chunk_size = int(2e6)
         pbar = range(0, tree_xyz_lr.shape[0], chunk_size)
         if self.verbose:
-            pbar = tqdm(pbar, desc="Coarse clustering fit", leave=False, position=1)
+            pbar = tqdm(pbar, desc="Coarse clustering fit", leave=False, position=2)
         for start in pbar:
             end = min(start + chunk_size, tree_xyz_lr.shape[0])
             model.partial_fit(tree_xyz_lr[start:end])
@@ -1161,7 +1179,7 @@ class TreeSegmRay:
         group_ids_lr = np.empty(tree_xyz_lr.shape[0], dtype=np.int32)
         pbar = range(0, tree_xyz_lr.shape[0], chunk_size)
         if self.verbose:
-            pbar = tqdm(pbar, desc="Coarse clustering predict", leave=False, position=1)
+            pbar = tqdm(pbar, desc="Coarse clustering predict", leave=False, position=2)
         for start in pbar:
             end = min(start + chunk_size, tree_xyz_lr.shape[0])
             group_ids_lr[start:end] = model.predict(tree_xyz_lr[start:end])
@@ -1173,7 +1191,7 @@ class TreeSegmRay:
         group_ids = np.empty(tree_xyz.shape[0], dtype=np.int32)
         pbar = range(0, tree_xyz.shape[0], chunk_size)
         if self.verbose:
-            pbar = tqdm(pbar, desc="Coarse label upsampling", leave=False, position=1)
+            pbar = tqdm(pbar, desc="Coarse label upsampling", leave=False, position=2)
         for start in pbar:
             end = min(start + chunk_size, tree_xyz.shape[0])
             _, idx = kdtree.query(tree_xyz[start:end], k=1)
@@ -1189,7 +1207,7 @@ class TreeSegmRay:
 
         group_labels = np.unique(group_ids)
         pbar = (
-            tqdm(group_labels, desc="Fine tree clustering", leave=False, position=1)
+            tqdm(group_labels, desc="Fine tree clustering", leave=False, position=2)
             if self.verbose
             else group_labels
         )
@@ -1221,12 +1239,13 @@ class TreeSegmRay:
             group_indices = np.concatenate(group_index_chunks)
             group_voxel = xyz[group_indices]
             group_voxel_labels = labels[group_indices]
+            group_voxel_rays = rays[group_indices] if rays is not None else None
             group_voxel_tree_mask = group_voxel_labels == self.tree_label
 
             self.rm_container()
             try:
                 tree_ids_voxel, shrub_ids_voxel = self._segment_small(
-                    group_voxel, group_voxel_labels
+                    group_voxel, group_voxel_labels, group_voxel_rays
                 )
             except Exception:  # noqa: BLE001
                 max_tree_dim = 3.0
@@ -1287,6 +1306,7 @@ class TreeSegmRay:
                 group_indices,
                 group_voxel,
                 group_voxel_labels,
+                group_voxel_rays,
                 tree_ids_voxel,
                 shrub_ids_voxel,
             )
@@ -1368,7 +1388,24 @@ class TreeSegmRay:
         self,
         xyz: NDArray,
         labels: NDArray,
+        rays: NDArray | None = None,
     ) -> tuple[NDArray[np.int32], NDArray[np.int8]]:
+        xyz = np.asarray(xyz)
+        if xyz.ndim != 2 or xyz.shape[1] not in {3, 6, 7}:
+            raise ValueError("xyz must have shape (n, 3), (n, 6), or (n, 7)")
+        if rays is None and xyz.shape[1] == 6:
+            rays = xyz[:, 3:6]
+        elif rays is None and xyz.shape[1] == 7:
+            rays = xyz[:, 4:7]
+        xyz = xyz[:, :3]
+
+        if rays is not None:
+            rays = np.asarray(rays)
+            if rays.shape != xyz.shape:
+                raise ValueError(f"rays must have shape {xyz.shape}, not {rays.shape}")
+            if not np.isfinite(rays).all():
+                raise ValueError("rays must contain only finite values")
+
         full_tree_ids = np.full(len(xyz), -1, dtype=np.int32)
         full_shrub_ids = np.full(len(xyz), -1, dtype=np.int32)
         if xyz.shape[0] == 0:
@@ -1385,9 +1422,9 @@ class TreeSegmRay:
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
         if xyz[tree_mask].shape[0] > 1e7:  # threshold checked
-            tree_ids, shrub_ids = self._segment_birch(xyz.copy(), labels)
+            tree_ids, shrub_ids = self._segment_birch(xyz.copy(), labels, rays)
         else:
-            tree_ids, shrub_ids = self._segment_small(xyz, labels)
+            tree_ids, shrub_ids = self._segment_small(xyz, labels, rays)
         full_tree_ids[tree_mask] = tree_ids
         full_shrub_ids[tree_mask] = shrub_ids
 
@@ -1499,7 +1536,7 @@ def test_segment_empty_and_no_tree_return_point_aligned_defaults():
         np.zeros((0, 3), dtype=np.float32),
         np.zeros(0, dtype=np.int32),
     )
-    no_tree_ids, no_tree_species = segmenter.segment(
+    no_tree_ids, no_species = segmenter.segment(
         np.zeros((3, 3), dtype=np.float32),
         np.array([1, 2, 3], dtype=np.int32),
     )
@@ -1507,9 +1544,101 @@ def test_segment_empty_and_no_tree_return_point_aligned_defaults():
     assert empty_ids.shape == (0,)
     assert empty_species.shape == (0,)
     assert no_tree_ids.tolist() == [-1, -1, -1]
-    assert no_tree_species.tolist() == [-1, -1, -1]
+    assert no_species.tolist() == [-1, -1, -1]
     assert empty_ids.dtype == no_tree_ids.dtype == np.int32
-    assert empty_species.dtype == no_tree_species.dtype == np.int8
+    assert empty_species.dtype == no_species.dtype == np.int8
+
+
+def test_segment_derives_rays_from_supported_array_layouts():
+    segmenter = TreeSegmRay.__new__(TreeSegmRay)
+    segmenter.tree_label = 7
+    captured_rays = []
+
+    def segment_small(xyz, labels, rays=None):
+        captured_rays.append(rays.copy() if rays is not None else None)
+        point_count = np.count_nonzero(labels == segmenter.tree_label)
+        return np.arange(point_count, dtype=np.int32), np.full(point_count, -1, dtype=np.int32)
+
+    segmenter._segment_small = segment_small
+
+    xyz = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    rays = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+    labels = np.full(2, 7, dtype=np.int32)
+
+    segmenter.segment(np.column_stack((xyz, rays)), labels)
+    segmenter.segment(np.column_stack((xyz, np.array([10.0, 11.0]), rays)), labels)
+
+    np.testing.assert_array_equal(captured_rays[0], rays)
+    np.testing.assert_array_equal(captured_rays[1], rays)
+
+
+def test_write_raycloud_ply_only_writes_supplied_rays(tmp_path):
+    points = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
+    rays = np.array([[4.0, 5.0, 6.0]], dtype=np.float32)
+    point_path = tmp_path.joinpath("points.ply")
+    ray_path = tmp_path.joinpath("rays.ply")
+
+    TreeSegmRay._write_raycloud_ply(points, str(point_path))
+    TreeSegmRay._write_raycloud_ply(points, str(ray_path), rays)
+
+    point_data = point_path.read_bytes()
+    ray_data = ray_path.read_bytes()
+    assert b"property float nx\n" not in point_data
+    assert b"property float nx\n" in ray_data
+    assert rays[0].tobytes() in ray_data
+
+
+def test_segment_small_enables_rayextract_rays_only_with_real_data(tmp_path):
+    segmenter = TreeSegmRay.__new__(TreeSegmRay)
+    segmenter.tree_label = 7
+    segmenter.ground_label = 1
+    segmenter.verbose = False
+    segmenter.use_rays = True
+    segmenter.segment_branches = False
+    segmenter.height_min = 2.0
+    segmenter.max_diameter = 0.9
+    segmenter.crop_length = 1.0
+    segmenter.distance_limit = 0.3
+    segmenter.girth_height_ratio = 0.35
+    segmenter.gravity_factor = 0.75
+    segmenter.global_taper = None
+    segmenter.global_taper_factor = None
+    segmenter.grid_width = None
+    segmenter._shared_tmpdir = str(tmp_path)
+    segmenter.start_container = lambda: None
+    segmenter.rm_container = lambda: None
+    segmenter._read_labels_from_segmented_ply = lambda path: np.zeros(2, dtype=np.int32)
+    segmenter._connect_floating_clusters = lambda labels, *args, **kwargs: labels
+    segmenter._remove_small_clusters = lambda labels, **kwargs: labels
+    segmenter._reduce_labels = lambda labels: labels
+    segmenter._segment_shrubs = lambda xyz, labels, **kwargs: np.full(
+        len(xyz), -1, dtype=np.int32
+    )
+    commands = []
+
+    def run(cmd, workdir):
+        commands.append(cmd)
+        pth.Path(workdir).joinpath("cloud_segmented.ply").touch()
+
+    segmenter._run = run
+    xyz = np.array(
+        [
+            [0.0, 0.0, 1.0],
+            [0.2, 0.2, 2.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    labels = np.array([7, 7, 1, 1, 1], dtype=np.int32)
+    rays = np.ones((len(xyz), 3), dtype=np.float32)
+
+    segmenter._segment_small(xyz.copy(), labels)
+    segmenter._segment_small(xyz.copy(), labels, rays)
+
+    assert "--use_rays" not in commands[0]
+    assert "--use_rays" in commands[1]
 
 
 def test_connected_components_voxel_two_clusters():
