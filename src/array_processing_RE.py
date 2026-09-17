@@ -212,14 +212,10 @@ class TreeSegmRay:
             rays = np.asarray(rays, dtype=np.float32)
             if rays.shape != (n, 3):
                 raise ValueError(f"rays must have shape {(n, 3)}, not {rays.shape}")
+        else:
+            rays = np.tile(np.array([0, 0, 10], dtype=np.float32), (n, 1))
         times = np.zeros(n, dtype=np.float64)
         colors = np.full((n, 4), 128, dtype=np.uint8)
-
-        ray_properties = (
-            "property float nx\nproperty float ny\nproperty float nz\n"
-            if rays is not None
-            else ""
-        )
 
         with open(path, "wb") as f:
             f.write(
@@ -229,7 +225,7 @@ class TreeSegmRay:
                     f"element vertex {n:010d}\n"
                     "property float x\nproperty float y\nproperty float z\n"
                     "property double time\n"
-                    f"{ray_properties}"
+                    "property float nx\nproperty float ny\nproperty float nz\n"
                     "property uchar red\nproperty uchar green\n"
                     "property uchar blue\nproperty uchar alpha\nend_header\n"
                 ).encode("ascii")
@@ -237,8 +233,7 @@ class TreeSegmRay:
             for i in range(n):
                 f.write(pts[i].tobytes())
                 f.write(times[i].tobytes())
-                if rays is not None:
-                    f.write(rays[i].tobytes())
+                f.write(rays[i].tobytes())
                 f.write(colors[i].tobytes())
 
     @staticmethod
@@ -928,7 +923,7 @@ class TreeSegmRay:
                 cmd += ["--global_taper_factor", str(self.global_taper_factor)]
             if self.grid_width is not None:
                 cmd += ["--grid_width", str(self.grid_width)]
-            if self.use_rays and tree_rays is not None:
+            if tree_rays is not None:
                 cmd.append("--use_rays")
             if self.segment_branches:
                 cmd.append("--branch_segmentation")
@@ -1512,7 +1507,7 @@ def test_segment_derives_rays_from_supported_array_layouts():
     np.testing.assert_array_equal(captured_rays[1], rays)
 
 
-def test_write_raycloud_ply_only_writes_supplied_rays(tmp_path):
+def test_write_raycloud_ply_writes_supplied_or_default_rays(tmp_path):
     points = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
     rays = np.array([[4.0, 5.0, 6.0]], dtype=np.float32)
     point_path = tmp_path.joinpath("points.ply")
@@ -1523,8 +1518,9 @@ def test_write_raycloud_ply_only_writes_supplied_rays(tmp_path):
 
     point_data = point_path.read_bytes()
     ray_data = ray_path.read_bytes()
-    assert b"property float nx\n" not in point_data
+    assert b"property float nx\n" in point_data
     assert b"property float nx\n" in ray_data
+    assert np.array([0.0, 0.0, 10.0], dtype=np.float32).tobytes() in point_data
     assert rays[0].tobytes() in ray_data
 
 
@@ -1572,9 +1568,19 @@ def test_segment_small_enables_rayextract_rays_only_with_real_data(tmp_path):
         dtype=np.float32,
     )
     labels = np.array([7, 7, 1, 1, 1], dtype=np.int32)
-    rays = np.ones((len(xyz), 3), dtype=np.float32)
+    rays = np.array(
+        [
+            [0.0, 0.0, 10.0],
+            [1.0, 0.0, 9.0],
+            [0.0, 1.0, 8.0],
+            [1.0, 1.0, 7.0],
+            [2.0, 1.0, 6.0],
+        ],
+        dtype=np.float32,
+    )
 
     segmenter._segment_small(xyz.copy(), labels)
+    segmenter.use_rays = False
     segmenter._segment_small(xyz.copy(), labels, rays)
 
     assert "--use_rays" not in commands[0]
@@ -1779,7 +1785,8 @@ def main():
         )
 
         save_laz(las, _merged_instance_ids, path.with_name(f"{path.stem}_segmented.laz"))
-        plot_cloud(xyz, _merged_instance_ids)
+        for instance_id in np.unique(_merged_instance_ids):
+            plot_cloud(xyz[_merged_instance_ids == instance_id])
 
 
 if __name__ == "__main__":
