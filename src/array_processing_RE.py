@@ -1351,8 +1351,6 @@ class TreeSegmRay:
                 point_source_id=point_source_id,
                 scan_angle_deg=scan_angle_deg,
             )
-            if rays is None and self.verbose:
-                tqdm.write("[rays] Flight data unavailable; continuing without rays")
 
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
