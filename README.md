@@ -7,7 +7,7 @@ This repository provides tree instance segmentation for LiDAR point cloud data.
 - `src/array_processing_RE.py` — defines `TreeSegmRay`, the main segmentation class
 - `src/utils/plot_cloud.py` — point cloud visualization helper used by the example
 - `src/final_files/config_RE.json` — optional JSON configuration for `TreeSegmRay`
-- `requirements.txt` — Python dependency list for the project
+- `pyproject.toml` and `uv.lock` — dependency metadata and reproducible resolution
 
 ## Installation
 
@@ -18,20 +18,16 @@ git clone https://github.com/kalmary/Tree-Clustering.git
 cd Tree-Clustering
 ```
 
-2. Create and activate a virtual environment:
+2. Create the Python 3.12 uv environment:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+uv sync
+uv sync --group test  # add visualization and test tools
 ```
 
-3. Install Python dependencies:
+The default `basic` group contains LAS/LAZ runtime support. The `test` group adds visualization and test tools. TreeClustering no longer requires a PyTorch profile.
 
-```bash
-pip install -r requirements.txt
-```
-
-4. If using the Docker backend, install Docker and pull the `raycloudtools` image:
+3. If using the Docker backend, install Docker and pull the `raycloudtools` image:
 
 ```bash
 docker pull ghcr.io/csiro-robotics/raycloudtools:latest
@@ -75,7 +71,7 @@ shrub instance IDs, with `-1` for unassigned points. `initial_species` contains
 Direct script execution is also supported:
 
 ```bash
-python src/array_processing_RE.py
+uv run --no-sync python src/array_processing_RE.py
 ```
 
 But the import-based approach is the recommended workflow.
