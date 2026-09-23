@@ -1,0 +1,27 @@
+[project]
+name = "tree-clustering"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+basic = [
+    "laspy>=2.6,<3",
+    "laszip>=0.2,<1",
+    "lazrs>=0.8,<1",
+    "numpy>=1.26,<3",
+    "scipy>=1.16,<2",
+    "tqdm>=4.67,<5",
+]
+test = [
+    { include-group = "basic" },
+    "matplotlib>=3.10,<4",
+    "pytest>=9,<10",
+    "pyvista>=0.47,<1",
+]
+[tool.uv]
+package = false
+default-groups = ["basic"]
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py", "array_processing_RE.py"]
