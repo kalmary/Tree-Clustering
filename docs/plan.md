@@ -33,7 +33,7 @@
 - [ ] Guarantee cleanup of temporary files and owned containers on success, failure, and interruption.
 - [ ] Keep Docker startup privileged operations out of import and construction paths.
 
-## Task 4: Split array_processing_RE.py incrementally
+## Task 4: Split array_processing_re.py incrementally
 
 - [ ] Keep `TreeSegmRay` and the old module as the compatibility facade.
 - [ ] Extract config/state validation first.

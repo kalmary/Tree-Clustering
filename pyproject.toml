@@ -24,4 +24,4 @@ package = false
 default-groups = ["basic"]
 
 [tool.pytest.ini_options]
-python_files = ["test_*.py", "array_processing_RE.py"]
+python_files = ["test_*.py", "array_processing_re.py"]
