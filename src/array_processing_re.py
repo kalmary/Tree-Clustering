@@ -1,3 +1,4 @@
+import argparse
 import gc
 import json
 import os
@@ -14,10 +15,10 @@ from numpy.typing import NDArray
 from scipy.spatial import Delaunay, KDTree
 from tqdm import tqdm
 
-try:
-    from utils.get_rays import get_las_ray_inputs, get_rays
-except ImportError:
+if __package__:
     from .utils.get_rays import get_las_ray_inputs, get_rays
+else:
+    from utils.get_rays import get_las_ray_inputs, get_rays
 
 # @dataclass
 # class TreeSegmRayConfig:
@@ -1746,46 +1747,58 @@ def test_segment_does_not_generate_rays_when_disabled():
 # Example
 # ---------------------------------------------------------------------------
 
-def main():
+def main(argv=None):
     from pathlib import Path
+
+    module_dir = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description="Segment tree and shrub instances in a LAZ file.")
+    parser.add_argument("--input-path", type=Path, required=True)
+    parser.add_argument(
+        "--config-path",
+        type=Path,
+        default=module_dir / "final_files" / "config_RE.json",
+    )
+    parser.add_argument("--output-path", type=Path)
+    parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
+    args = parser.parse_args(argv)
 
     import laspy
 
-    try:
+    if __package__:
+        from .utils.save_laz import save_laz
+    else:
         from utils.save_laz import save_laz
 
-        from utils.plot_cloud import plot_cloud
-    except ImportError:
-        from .utils.plot_cloud import plot_cloud
-        from .utils.save_laz import save_laz
-
-    seg = TreeSegmRay(ground_label=1, tree_label=7, verbose=True)
-
     seg = TreeSegmRay.from_config(
-        cfg_path="src/final_files/config_RE.json", verbose=True
+        cfg_path=args.config_path,
+        verbose=args.verbose,
     )
 
-    for path in [
-        Path(
-            "/Users/michalsiniarski/Documents/PROGRAMMING/Tree-Clustering/fixtures/Grajewo_2026_6_1_mod.laz"
-        )
-    ]:
-        las = laspy.read(path)
-        xyz = np.column_stack((np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)))
-        labels = np.asarray(las.classification)
+    path = args.input_path
+    las = laspy.read(path)
+    xyz = np.column_stack((np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)))
+    labels = np.asarray(las.classification)
 
-        ray_inputs = get_las_ray_inputs(las, use_rays=seg.use_rays)
-        _merged_instance_ids, _initial_model_species = seg.segment(
-            xyz,
-            labels,
-            **ray_inputs,
-        )
+    ray_inputs = get_las_ray_inputs(las, use_rays=seg.use_rays)
+    merged_instance_ids, _initial_model_species = seg.segment(
+        xyz,
+        labels,
+        **ray_inputs,
+    )
 
-        save_laz(las, _merged_instance_ids, path.with_name(f"{path.stem}_segmented.laz"))
-        for instance_id in np.unique(_merged_instance_ids):
+    output_path = args.output_path or path.with_name(f"{path.stem}_segmented.laz")
+    save_laz(las, merged_instance_ids, output_path)
+    if args.plot:
+        if __package__:
+            from .utils.plot_cloud import plot_cloud
+        else:
+            from utils.plot_cloud import plot_cloud
+
+        for instance_id in np.unique(merged_instance_ids):
             if instance_id == -1:
                 continue
-            plot_cloud(xyz[_merged_instance_ids == instance_id])
+            plot_cloud(xyz[merged_instance_ids == instance_id])
 
 
 if __name__ == "__main__":
