@@ -4,7 +4,7 @@ This repository provides tree instance segmentation for LiDAR point cloud data.
 
 ## Repository structure
 
-- `src/array_processing_RE.py` — defines `TreeSegmRay`, the main segmentation class
+- `src/array_processing_re.py` — defines `TreeSegmRay`, the main segmentation class
 - `src/utils/plot_cloud.py` — point cloud visualization helper used by the example
 - `src/final_files/config_RE.json` — optional JSON configuration for `TreeSegmRay`
 - `pyproject.toml` and `uv.lock` — dependency metadata and reproducible resolution
@@ -38,12 +38,12 @@ https://github.com/csiro-robotics/raycloudtools
 
 ## Usage
 
-The preferred usage is to import `TreeSegmRay` from `src.array_processing_RE` and call its `segment()` method.
+The preferred usage is to import `TreeSegmRay` from `src.array_processing_re` and call its `segment()` method.
 
 Example:
 
 ```python
-from src.array_processing_RE import TreeSegmRay
+from src.array_processing_re import TreeSegmRay
 import laspy
 import numpy as np
 
@@ -71,7 +71,7 @@ shrub instance IDs, with `-1` for unassigned points. `initial_species` contains
 Direct script execution is also supported:
 
 ```bash
-uv run --no-sync python src/array_processing_RE.py
+uv run --no-sync python src/array_processing_re.py
 ```
 
 But the import-based approach is the recommended workflow.
