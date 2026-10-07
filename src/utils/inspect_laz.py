@@ -16,6 +16,7 @@ Having these standard fields allows us to approximate the scanner's trajectory
 and simulate proper rays without needing an external trajectory file.
 """
 
+import argparse
 import logging
 from pathlib import Path
 
@@ -82,7 +83,12 @@ def inspect_laz_for_rays(file_path: Path):
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error reading {file_path}: {e}")
 
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Inspect a LAZ file for ray-related dimensions.")
+    parser.add_argument("--input-path", type=Path, required=True)
+    args = parser.parse_args(argv)
+    inspect_laz_for_rays(args.input_path)
+
+
 if __name__ == "__main__":
-    # Hardcoded path to the fixture file
-    LAZ_FILE_PATH = Path("/Users/michalsiniarski/Documents/PROGRAMMING/Tree-Clustering/fixtures/Grajewo_2026_6_1_mod.laz")
-    inspect_laz_for_rays(LAZ_FILE_PATH)
+    main()
