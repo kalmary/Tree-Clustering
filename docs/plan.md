@@ -12,10 +12,10 @@
 
 - [x] Create `.python-version`, `pyproject.toml`, and `uv.lock` for Python 3.12.
 - [x] Replace the requirements freeze with direct dependencies derived from imports.
-- [x] Define headless `basic` and `test` including `basic`, `pytest`, `matplotlib`, and `pyvista`.
+- [x] Define headless `basic` and `dev` including `basic`, `pytest`, `matplotlib`, and `pyvista`.
 - [x] Keep visualization packages out of the normal clustering import path.
 - [x] Omit PyTorch because no retained TreeClustering code imports it.
-- [x] Verify clean basic/test syncs, pytest collection, and current public imports.
+- [x] Verify clean basic/dev syncs, pytest collection, and current public imports.
 
 ## Task 2: Protect array and label contracts
 

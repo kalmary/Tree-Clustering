@@ -22,10 +22,10 @@ cd Tree-Clustering
 
 ```bash
 uv sync
-uv sync --group test  # add visualization and test tools
+uv sync --group dev  # add visualization and test tools
 ```
 
-The default `basic` group contains LAS/LAZ runtime support. The `test` group adds visualization and test tools. TreeClustering no longer requires a PyTorch profile.
+The default `basic` group contains LAS/LAZ runtime support. The `dev` group adds visualization and test tools. TreeClustering no longer requires a PyTorch profile.
 
 3. If using the Docker backend, install Docker and pull the `raycloudtools` image:
 
