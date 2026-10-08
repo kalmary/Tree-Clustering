@@ -22,10 +22,10 @@ cd Tree-Clustering
 
 ```bash
 uv sync
-uv sync --group dev  # add visualization and test tools
+uv sync --group dev  # add standalone LAS/LAZ, visualization, and test tools
 ```
 
-The default `basic` group contains LAS/LAZ runtime support. The `dev` group adds visualization and test tools. TreeClustering no longer requires a PyTorch profile.
+The default `basic` group provides array-based tree clustering. The `dev` group adds standalone LAS/LAZ processing, visualization, and test tools. TreeClustering no longer requires a PyTorch profile.
 
 3. If using the Docker backend, install Docker and pull the `raycloudtools` image:
 
@@ -71,7 +71,9 @@ shrub instance IDs, with `-1` for unassigned points. `initial_species` contains
 Direct script execution is also supported:
 
 ```bash
-uv run --no-sync python src/array_processing_re.py
+uv run --no-sync python src/array_processing_re.py --help
+uv run --no-sync python -m src.array_processing_re --help
+uv run --no-sync python src/array_processing_re.py --input-path input.laz --no-plot
 ```
 
 But the import-based approach is the recommended workflow.
