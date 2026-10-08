@@ -558,9 +558,6 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 basic = [
-    { name = "laspy" },
-    { name = "laszip" },
-    { name = "lazrs" },
     { name = "numpy" },
     { name = "scipy" },
     { name = "tqdm" },
@@ -581,9 +578,6 @@ dev = [
 
 [package.metadata.requires-dev]
 basic = [
-    { name = "laspy", specifier = ">=2.6,<3" },
-    { name = "laszip", specifier = ">=0.2,<1" },
-    { name = "lazrs", specifier = ">=0.8,<1" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "scipy", specifier = ">=1.16,<2" },
     { name = "tqdm", specifier = ">=4.67,<5" },
