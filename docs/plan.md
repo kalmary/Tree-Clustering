@@ -1,62 +1,66 @@
-# TreeClustering Rebuild Plan
+# Tree Clustering Import Repair Plan
 
-**Goal:** Incrementally split tree/shrub instance segmentation and the raycloudtools integration into testable units while preserving `TreeSegmRay`, label semantics, and direct script use.
+**Goal:** Repair package and standalone-tool imports without changing tree or
+shrub instance segmentation or raycloudtools behavior.
 
-**Root-facing contract:** `TreeSegmRay.from_config(...).segment(points, labels, rays=...)` returns point-aligned instance IDs and initial species labels.
+**Root-facing contract:**
+`TreeSegmRay.from_config(...).segment(points, labels, rays=...)` retains its
+current arrays, labels, IDs, ordering, and failure behavior.
 
-**Design:** `../../../docs/rebuild.md`
+**Parent plan:** `../../../docs/plan.md`
 
-**Branch requirement:** Perform all rebuild work on `development`. Verify the active branch first and request explicit approval before creating or switching it.
+## Frozen behavior
 
-## Task 1: Establish the uv project
+- Do not split or rewrite `TreeSegmRay`, clustering, connected components,
+  floating-cluster handling, trunk filtering, label reduction, ray preparation,
+  Docker commands, or temporary-file behavior.
+- Preserve configuration keys, thresholds, labels, sentinels, output naming,
+  and ray enabling rules.
+- Keep every current `__main__` tool independently executable from this project.
 
-- [x] Create `.python-version`, `pyproject.toml`, and `uv.lock` for Python 3.12.
-- [x] Replace the requirements freeze with direct dependencies derived from imports.
-- [x] Define headless `basic` and `dev` including `basic`, `pytest`, `matplotlib`, and `pyvista`.
-- [x] Keep visualization packages out of the normal clustering import path.
-- [x] Omit PyTorch because no retained TreeClustering code imports it.
-- [x] Verify clean basic/dev syncs, pytest collection, and current public imports.
+## Completed foundation
 
-## Task 2: Protect array and label contracts
+- [x] Establish the Python 3.12 uv project and dependency groups.
+- [x] Remove the retired LLM/PDF workflow and its exclusive dependencies.
+- [x] Keep visualization outside the normal clustering import path.
 
-- [ ] Retain and expand tests for empty/no-tree input, tree/shrub merging, ID offsets, `-1` sentinels, dtypes, overflow, and shape mismatch.
-- [ ] Characterize accepted points, labels, and ray layouts and their validation errors.
-- [ ] Test config parsing and all root-used defaults.
-- [ ] Pin deterministic connected-component, floating-cluster, trunk-filter, and label-reduction behavior.
-- [ ] Test imports and direct/module entry execution from supported working directories.
+## Task 1: Protect imports and invocations
 
-## Task 3: Isolate raycloudtools
+- [ ] Characterize `TreeSegmRay` import, ray-disabled processing, and existing
+  error propagation before changing imports.
+- [ ] Inventory every `__main__` guard without removing any executable.
+- [ ] Add paired direct/module `--help` tests for operational and diagnostic
+  tools.
+- [ ] Verify parent-root import resolves this project's `TreeSegmRay`.
 
-- [ ] Define a small backend boundary for executable discovery, Docker lifecycle, PLY I/O, command execution, and parsed results.
-- [ ] Use a deterministic fake backend for default tests.
-- [ ] Preserve current command arguments, ray enabling rules, temporary data, and failure propagation.
-- [ ] Guarantee cleanup of temporary files and owned containers on success, failure, and interruption.
-- [ ] Keep Docker startup privileged operations out of import and construction paths.
+## Task 2: Repair package imports
 
-## Task 4: Split array_processing_re.py incrementally
+- [ ] Replace ambiguous top-level `utils` imports with package-relative imports
+  in reusable modules.
+- [ ] Remove broad `ImportError` fallback selection so errors raised inside a
+  valid dependency propagate unchanged.
+- [ ] Prevent `utils.__init__` from loading Laspy persistence or plotting when
+  only ray construction is imported.
+- [ ] Keep direct-script bootstrapping limited to thin entry-point code.
 
-- [ ] Keep `TreeSegmRay` and the old module as the compatibility facade.
-- [ ] Extract config/state validation first.
-- [ ] Extract ray preparation and external backend adaptation.
-- [ ] Extract pure clustering/post-processing groups only after their existing tests pass independently.
-- [ ] Keep each extraction behavior-neutral; do not retune thresholds or replace algorithms.
+## Task 3: Preserve standalone tools
 
-## Task 5: Normalize utilities and scripts
+- [ ] Replace developer-specific hardcoded inputs with explicit CLI arguments.
+- [ ] Keep LAZ inspection/saving and visualization tools available under
+  `dev`, without adding their dependencies to the root-facing import path.
+- [ ] Verify all declared commands directly and with `python -m` from this
+  project root.
 
-- [ ] Replace generic `utils` imports with package-relative imports.
-- [ ] Keep plotting utilities optional to the basic path.
-- [ ] Keep retained inspection, saving, and visualization scripts directly executable and module-executable.
-- [ ] Resolve configs and outputs without accidental current-working-directory dependence.
-- [x] Remove the retired LLM/GPT classification and PDF-report workflows and their exclusive dependencies.
+## Task 4: Verify
 
-## Task 6: Verify
+- [ ] Run import-boundary, invocation, and complete deterministic tests.
+- [ ] Run ray-disabled fixtures without Docker.
+- [ ] Verify parent-root processing with existing tree/shrub fixtures.
+- [ ] Run Docker/raycloudtools and visualization smoke tests separately when
+  their environments are available.
 
-- [ ] Run the existing algorithmic unit suite after each extraction.
-- [ ] Run invocation/import tests in both standalone and BRIK contexts.
-- [ ] Run a ray-disabled in-process fixture with no Docker dependency.
-- [ ] Run an explicit Docker/raycloudtools smoke test with representative ray data.
-- [ ] Run root integration for tree-only, shrub-only, mixed, absent-ray, and real-ray inputs.
+## Completion gate
 
-## Completion Gate
-
-The project resolves with uv; default tests do not require Docker or GUI access; `TreeSegmRay` remains compatible; temporary/external-resource ownership is explicit; invocation modes and the Docker smoke test pass.
+`TreeSegmRay` imports only its real root-facing dependencies, every retained
+tool works independently, internal import failures are not hidden, and all
+clustering outputs remain unchanged.
