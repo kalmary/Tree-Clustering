@@ -28,7 +28,7 @@ current arrays, labels, IDs, ordering, and failure behavior.
 
 - [ ] Characterize `TreeSegmRay` import, ray-disabled processing, and existing
   error propagation before changing imports.
-- [ ] Inventory every `__main__` guard without removing any executable.
+- [x] Inventory every `__main__` guard without removing any executable.
 - [ ] Add paired direct/module `--help` tests for operational and diagnostic
   tools.
 - [ ] Verify parent-root import resolves this project's `TreeSegmRay`.
