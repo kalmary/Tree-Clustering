@@ -1747,7 +1747,13 @@ def test_segment_does_not_generate_rays_when_disabled():
 # Example
 # ---------------------------------------------------------------------------
 
-def main(argv=None):
+def test_argparser_disables_plot_by_default(tmp_path):
+    args = argparser(["--input-path", str(tmp_path / "cloud.laz")])
+
+    assert args.plot is False
+
+
+def argparser(argv=None):
     from pathlib import Path
 
     module_dir = Path(__file__).resolve().parent
@@ -1760,8 +1766,12 @@ def main(argv=None):
     )
     parser.add_argument("--output-path", type=Path)
     parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
-    args = parser.parse_args(argv)
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=False)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = argparser(argv)
 
     import laspy
 
