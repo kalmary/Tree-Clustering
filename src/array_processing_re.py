@@ -152,6 +152,7 @@ class TreeSegmRay:
                     "ghcr.io/csiro-robotics/raycloudtools:latest",
                 ],
                 capture_output=True,
+                check=False,
             )
             if r.returncode == 0:
                 return "docker"
