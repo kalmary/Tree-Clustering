@@ -1488,7 +1488,8 @@ def test_segment_derives_rays_from_supported_array_layouts():
     segmenter.tree_label = 7
     captured_rays = []
 
-    def segment_small(xyz, labels, rays=None):
+    def segment_small(xyz, labels=None, rays=None, debug=False):
+        assert labels is not None
         captured_rays.append(rays.copy() if rays is not None else None)
         point_count = np.count_nonzero(labels == segmenter.tree_label)
         return np.arange(point_count, dtype=np.int32), np.full(point_count, -1, dtype=np.int32)
@@ -1543,12 +1544,33 @@ def test_segment_small_enables_rayextract_rays_only_with_real_data(tmp_path):
     segmenter.start_container = lambda: None
     segmenter.rm_container = lambda: None
     segmenter._read_labels_from_segmented_ply = lambda path: np.zeros(2, dtype=np.int32)
-    segmenter._connect_floating_clusters = lambda labels, *args, **kwargs: labels
-    segmenter._remove_small_clusters = lambda labels, **kwargs: labels
+    def connect_floating_clusters(
+        tree_labels,
+        tree_xyz,
+        ground_xyz,
+        ground_z_threshold=0.5,
+        min_cluster_size=5000,
+        max_tilt_deg=30.0,
+    ):
+        return tree_labels
+
+    def remove_small_clusters(tree_labels, min_points=100):
+        return tree_labels
+
+    def segment_shrubs(
+        tree_xyz,
+        tree_ids,
+        ground_xyz=None,
+        xy_voxel_size=0.5,
+        outlier_neighbors=48,
+        outlier_std_ratio=0.5,
+    ):
+        return np.full(len(tree_xyz), -1, dtype=np.int32)
+
+    segmenter._connect_floating_clusters = connect_floating_clusters
+    segmenter._remove_small_clusters = remove_small_clusters
     segmenter._reduce_labels = lambda labels: labels
-    segmenter._segment_shrubs = lambda xyz, labels, **kwargs: np.full(
-        len(xyz), -1, dtype=np.int32
-    )
+    segmenter._segment_shrubs = segment_shrubs
     commands = []
 
     def run(cmd, workdir):
