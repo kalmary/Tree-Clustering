@@ -7,6 +7,7 @@ dependencies = []
 [dependency-groups]
 basic = [
     "numpy>=1.26,<3",
+    "raycloud-tools",
     "scipy>=1.16,<2",
     "tqdm>=4.67,<5",
 ]
@@ -22,6 +23,9 @@ dev = [
 [tool.uv]
 package = false
 default-groups = ["basic"]
+
+[tool.uv.sources]
+raycloud-tools = { path = "raycloud_tools" }
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "array_processing_re.py"]

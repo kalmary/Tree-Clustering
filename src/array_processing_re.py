@@ -5,12 +5,11 @@ import os
 import pathlib as pth
 import shutil
 import struct
-import subprocess
 import tempfile
-import uuid
 from typing import Any, cast
 
 import numpy as np
+import raycloud_tools
 from numpy.typing import NDArray
 from scipy.spatial import Delaunay, KDTree
 from tqdm import tqdm
@@ -71,10 +70,6 @@ class TreeSegmRay:
         self.tree_label          = tree_label
         self.ground_label        = ground_label
 
-        self._container_name = None
-        self._shared_tmpdir  = None
-        self._backend        = self._detect_backend()
-
     @classmethod
     def from_config(
         cls,
@@ -91,112 +86,6 @@ class TreeSegmRay:
             return cls(**cfg, verbose=verbose)
         else:
             raise ValueError("Either cfg or cfg_path must be provided.")
-
-    # ------------------------------------------------------------------
-    # Container management
-    # ------------------------------------------------------------------
-
-    def start_container(self):
-        if self._backend != "docker":
-            return
-        if self._container_name is not None:
-            return
-
-        self._shared_tmpdir  = tempfile.mkdtemp(prefix="treesegmray_persistent_", dir=os.path.expanduser("~"))
-        self._container_name = f"treesegmray_{uuid.uuid4().hex[:8]}"
-        subprocess.run([
-            "docker", "run", "-d",
-            "--name", self._container_name,
-            "-v",     f"{self._shared_tmpdir}:/data",
-            "ghcr.io/csiro-robotics/raycloudtools:latest",
-            "sleep", "infinity",
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def rm_container(self):
-        if self._container_name:
-            subprocess.run(
-                ["docker", "rm", "-f", self._container_name],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._container_name = None
-
-        if self._shared_tmpdir:
-            shutil.rmtree(self._shared_tmpdir, ignore_errors=True)
-            self._shared_tmpdir = None
-
-    # ------------------------------------------------------------------
-    # Backend
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _detect_backend() -> str:
-        if shutil.which("rayextract"):
-            return "native"
-        if shutil.which("docker"):
-            if (
-                subprocess.run(
-                    ["docker", "info"], capture_output=True, check=False
-                ).returncode
-                != 0
-            ):
-                subprocess.run(["sudo", "systemctl", "start", "docker"], check=True)
-                subprocess.run(["docker", "info"], check=True)
-
-            r = subprocess.run(
-                [
-                    "docker",
-                    "image",
-                    "inspect",
-                    "ghcr.io/csiro-robotics/raycloudtools:latest",
-                ],
-                capture_output=True,
-                check=False,
-            )
-            if r.returncode == 0:
-                return "docker"
-            raise OSError(
-                "Docker found but raycloudtools image not pulled.\n"
-            )
-        raise OSError(
-            "raycloudtools not found"
-        )
-
-    def _run(self, cmd: list, workdir: str):
-        if self._backend == "docker":
-            def to_container(arg):
-                if not os.path.isabs(arg):
-                    return arg
-                if self._container_name:
-                    if self._shared_tmpdir is None:
-                        raise RuntimeError("Shared temporary directory is not initialized")
-                    rel = os.path.relpath(arg, self._shared_tmpdir)
-                    return "/data/" + rel
-                return "/data/" + os.path.basename(arg)
-
-            if self._container_name:
-                cmd = ["docker", "exec", self._container_name] + \
-                    [to_container(a) for a in cmd]
-            else:
-                cmd = [
-                    "docker", "run", "--rm",
-                    "-v", f"{workdir}:/data",
-                    "ghcr.io/csiro-robotics/raycloudtools:latest",
-                ] + [to_container(a) for a in cmd]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=workdir,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"rayextract failed (exit {result.returncode}):\n"
-                f"{result.stdout or ''}{result.stderr or '(no output)'}"
-            )
 
     # ------------------------------------------------------------------
     # PLY helpers
@@ -690,32 +579,6 @@ class TreeSegmRay:
             (xyz[:, 1] >= tile["y_min"]) & (xyz[:, 1] < tile["y_max"])
         )
     
-    def _ensure_container(self):
-        if self._backend != "docker" or self._container_name is None:
-            return
-        r = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Status}}", self._container_name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        status = r.stdout.strip()
-        if r.returncode != 0 or status != "running":
-            tqdm.write(f"[container] status='{status}', restarting...")
-            # preserve shared tmpdir, just recreate the container with same mount
-            self._container_name = f"treesegmray_{uuid.uuid4().hex[:8]}"
-            subprocess.run([
-                "docker", "run", "-d",
-                "--name", self._container_name,
-                "-v", f"{self._shared_tmpdir}:/data",
-                "ghcr.io/csiro-robotics/raycloudtools:latest",
-                "sleep", "infinity",
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # ------------------------------------------------------------------
-    # Trunk helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _estimate_trunk_position(
             tree_xyz: np.ndarray,
@@ -807,42 +670,6 @@ class TreeSegmRay:
 
         return new_ids.astype(np.int64)
 
-    # ------------------------------------------------------------------
-    # Segmentation
-    # ------------------------------------------------------------------
-
-    def _segment_watershed(self, tree_xyz: np.ndarray, resolution: float = 0.15) -> np.ndarray:
-        """2D watershed fallback on XY crown projection."""
-        from scipy.ndimage import label
-        from skimage.feature import peak_local_max  # type: ignore[import-not-found]
-        from skimage.segmentation import watershed  # type: ignore[import-not-found]
-
-        xy = tree_xyz[:, :2]
-        xy_min = xy.min(axis=0)
-        grid_shape = ((xy.max(axis=0) - xy_min) / resolution).astype(int) + 1
-
-        # density map
-        density = np.zeros(grid_shape, dtype=np.float32)
-        idx = ((xy - xy_min) / resolution).astype(int)
-        np.add.at(density, (idx[:, 0], idx[:, 1]), 1)
-
-        # smooth + watershed
-        from scipy.ndimage import gaussian_filter
-
-        density_smooth = gaussian_filter(density, sigma=1.5)
-
-        coords = peak_local_max(
-            density_smooth, min_distance=int(1.5 / resolution), threshold_abs=5
-        )
-        mask = np.zeros(grid_shape, dtype=bool)
-        mask[tuple(coords.T)] = True
-        markers, _ = label(mask)  # type: ignore[misc]
-        ws_labels = watershed(-density_smooth, markers, mask=density > 0)
-
-        # map back to points
-        point_labels = ws_labels[idx[:, 0], idx[:, 1]].astype(np.int64) - 1  # 0-indexed, -1 = unlabelled
-        return point_labels
-
     def _segment_small(
         self,
         xyz: NDArray,
@@ -850,8 +677,6 @@ class TreeSegmRay:
         rays: NDArray | None = None,
         debug: bool = False,
     ) -> tuple[NDArray[np.int32], NDArray[np.int32]]:
-
-        self.start_container()
 
         xyz -= xyz.mean(axis=0)  # center for better numerical stability in raycloudtools
 
@@ -895,13 +720,7 @@ class TreeSegmRay:
             )
             return tree_instance_labels, shrub_instance_labels
 
-        # Each call gets its own subdirectory so concurrent tiles never
-        # overwrite each other's cloud.ply / ground.ply inside the container.
-        own_tmpdir = self._shared_tmpdir is None
-        if own_tmpdir:
-            tmpdir = tempfile.mkdtemp(prefix="treesegmray_", dir=os.path.expanduser("~"))
-        else:
-            tmpdir = tempfile.mkdtemp(prefix="tile_", dir=self._shared_tmpdir)
+        tmpdir = tempfile.mkdtemp(prefix="treesegmray_")
 
         cloud_ply  = os.path.join(tmpdir, "cloud.ply")
         ground_ply = os.path.join(tmpdir, "ground.ply")
@@ -910,36 +729,29 @@ class TreeSegmRay:
             self._write_raycloud_ply(tree_xyz, cloud_ply, tree_rays)
             self._write_ground_mesh_ply(ground_xyz, ground_ply)
 
-            cmd = [
-                "rayextract", "trees", cloud_ply, ground_ply,
-                "--height_min",         str(self.height_min),
-                "--max_diameter",       str(self.max_diameter),
-                "--crop_length",        str(self.crop_length),
-                "--distance_limit",     str(self.distance_limit),
-                "--girth_height_ratio", str(self.girth_height_ratio),
-                "--gravity_factor",     str(self.gravity_factor),
-            ]
-            if self.global_taper is not None:
-                cmd += ["--global_taper",        str(self.global_taper)]
-            if self.global_taper_factor is not None:
-                cmd += ["--global_taper_factor", str(self.global_taper_factor)]
-            if self.grid_width is not None:
-                cmd += ["--grid_width", str(self.grid_width)]
-            if tree_rays is not None:
-                cmd.append("--use_rays")
-            if self.segment_branches:
-                cmd.append("--branch_segmentation")
-
-            self._run(cmd, workdir=tmpdir)
-
-            seg_ply = os.path.join(tmpdir, "cloud_segmented.ply")
-            if not os.path.exists(seg_ply):
+            seg_ply = raycloud_tools.run_trees(
+                cloud_ply,
+                ground_ply,
+                height_min=self.height_min,
+                max_diameter=self.max_diameter,
+                crop_length=self.crop_length,
+                distance_limit=self.distance_limit,
+                girth_height_ratio=self.girth_height_ratio,
+                gravity_factor=self.gravity_factor,
+                global_taper=self.global_taper,
+                global_taper_factor=self.global_taper_factor,
+                grid_width=self.grid_width,
+                use_rays=tree_rays is not None,
+                segment_branches=self.segment_branches,
+                workdir=tmpdir,
+            )
+            if not seg_ply.exists():
                 raise RuntimeError(
                     f"Segmented output not found at {seg_ply}.\n"
                     "Run with verbose=True to inspect raycloudtools output."
                 )
 
-            tree_instance_labels = self._read_labels_from_segmented_ply(seg_ply)
+            tree_instance_labels = self._read_labels_from_segmented_ply(os.fspath(seg_ply))
             tree_instance_labels = self._connect_floating_clusters(
                 tree_instance_labels, tree_xyz, ground_xyz,
                 ground_z_threshold=1.5,
@@ -950,7 +762,6 @@ class TreeSegmRay:
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
-            self.rm_container()
 
 
 
@@ -1158,7 +969,6 @@ class TreeSegmRay:
             group_voxel_rays = rays[group_indices] if rays is not None else None
             group_voxel_tree_mask = group_voxel_labels == self.tree_label
 
-            self.rm_container()
             try:
                 tree_ids_voxel, shrub_ids_voxel = self._segment_small(
                     group_voxel, group_voxel_labels, group_voxel_rays
@@ -1525,7 +1335,7 @@ def test_write_raycloud_ply_writes_supplied_or_default_rays(tmp_path):
     assert rays[0].tobytes() in ray_data
 
 
-def test_segment_small_enables_rayextract_rays_only_with_real_data(tmp_path):
+def test_segment_small_enables_rayextract_rays_only_with_real_data(monkeypatch):
     segmenter = TreeSegmRay.__new__(TreeSegmRay)
     segmenter.tree_label = 7
     segmenter.ground_label = 1
@@ -1541,9 +1351,6 @@ def test_segment_small_enables_rayextract_rays_only_with_real_data(tmp_path):
     segmenter.global_taper = None
     segmenter.global_taper_factor = None
     segmenter.grid_width = None
-    segmenter._shared_tmpdir = str(tmp_path)
-    segmenter.start_container = lambda: None
-    segmenter.rm_container = lambda: None
     segmenter._read_labels_from_segmented_ply = lambda path: np.zeros(2, dtype=np.int32)
     def connect_floating_clusters(
         tree_labels,
@@ -1572,13 +1379,15 @@ def test_segment_small_enables_rayextract_rays_only_with_real_data(tmp_path):
     segmenter._remove_small_clusters = remove_small_clusters
     segmenter._reduce_labels = lambda labels: labels
     segmenter._segment_shrubs = segment_shrubs
-    commands = []
+    calls = []
 
-    def run(cmd, workdir):
-        commands.append(cmd)
-        pth.Path(workdir).joinpath("cloud_segmented.ply").touch()
+    def run_trees(cloud_path, ground_path, **kwargs):
+        calls.append(kwargs)
+        output = pth.Path(cloud_path).with_name("cloud_segmented.ply")
+        output.touch()
+        return output
 
-    segmenter._run = run
+    monkeypatch.setattr(raycloud_tools, "run_trees", run_trees)
     xyz = np.array(
         [
             [0.0, 0.0, 1.0],
@@ -1605,8 +1414,10 @@ def test_segment_small_enables_rayextract_rays_only_with_real_data(tmp_path):
     segmenter.use_rays = False
     segmenter._segment_small(xyz.copy(), labels, rays)
 
-    assert "--use_rays" not in commands[0]
-    assert "--use_rays" in commands[1]
+    assert not calls[0]["use_rays"]
+    assert calls[1]["use_rays"]
+    assert not pth.Path(calls[0]["workdir"]).exists()
+    assert not pth.Path(calls[1]["workdir"]).exists()
 
 
 def test_connected_components_voxel_two_clusters():

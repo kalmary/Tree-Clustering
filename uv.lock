@@ -460,6 +460,11 @@ wheels = [
 ]
 
 [[package]]
+name = "raycloud-tools"
+version = "0.1.0"
+source = { directory = "raycloud_tools" }
+
+[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -559,6 +564,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 basic = [
     { name = "numpy" },
+    { name = "raycloud-tools" },
     { name = "scipy" },
     { name = "tqdm" },
 ]
@@ -570,6 +576,7 @@ dev = [
     { name = "numpy" },
     { name = "pytest" },
     { name = "pyvista" },
+    { name = "raycloud-tools" },
     { name = "scipy" },
     { name = "tqdm" },
 ]
@@ -579,6 +586,7 @@ dev = [
 [package.metadata.requires-dev]
 basic = [
     { name = "numpy", specifier = ">=1.26,<3" },
+    { name = "raycloud-tools", directory = "raycloud_tools" },
     { name = "scipy", specifier = ">=1.16,<2" },
     { name = "tqdm", specifier = ">=4.67,<5" },
 ]
@@ -590,6 +598,7 @@ dev = [
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pytest", specifier = ">=9,<10" },
     { name = "pyvista", specifier = ">=0.47,<1" },
+    { name = "raycloud-tools", directory = "raycloud_tools" },
     { name = "scipy", specifier = ">=1.16,<2" },
     { name = "tqdm", specifier = ">=4.67,<5" },
 ]

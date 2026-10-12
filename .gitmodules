@@ -1,0 +1,4 @@
+[submodule "raycloud_tools"]
+	path = raycloud_tools
+	url = git@github.com:kalmary/raycloudtools.git
+	branch = docker

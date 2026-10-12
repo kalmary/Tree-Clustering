@@ -13,7 +13,7 @@ current arrays, labels, IDs, ordering, and failure behavior.
 
 - Do not split or rewrite `TreeSegmRay`, clustering, connected components,
   floating-cluster handling, trunk filtering, label reduction, ray preparation,
-  Docker commands, or temporary-file behavior.
+  Raycloudtools arguments, or temporary-file behavior.
 - Preserve configuration keys, thresholds, labels, sentinels, output naming,
   and ray enabling rules.
 - Keep every current `__main__` tool independently executable from this project.
@@ -56,7 +56,7 @@ current arrays, labels, IDs, ordering, and failure behavior.
 - [x] Run import-boundary, invocation, and complete deterministic tests.
 - [x] Run ray-disabled fixtures without Docker.
 - [ ] Verify parent-root processing with existing tree/shrub fixtures.
-- [ ] Run Docker/raycloudtools and visualization smoke tests separately when
+- [ ] Run native raycloudtools and visualization smoke tests separately when
   their environments are available.
 
 ## Completion gate
