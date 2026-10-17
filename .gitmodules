@@ -1,0 +1,4 @@
+[submodule "raycloud_tools"]
+	path = raycloud_tools
+	url = ../raycloudtools.git
+	branch = main

@@ -121,7 +121,10 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
+.uv-cache/
 env/
 venv/
 ENV/
@@ -140,6 +143,8 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.ruff_cache/
+.pyright/
 .dmypy.json
 dmypy.json
 
@@ -159,6 +164,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 .vscode/
+.zed/
+.DS_Store
 
 **/training_results
 *.npy
@@ -174,4 +181,3 @@ cython_debug/
 *.laz
 **/split/
 **/fixtures
-

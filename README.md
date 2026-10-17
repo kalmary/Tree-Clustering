@@ -4,50 +4,53 @@ This repository provides tree instance segmentation for LiDAR point cloud data.
 
 ## Repository structure
 
-- `src/array_processing_RE.py` — defines `TreeSegmRay`, the main segmentation class
+- `src/array_processing_re.py` — defines `TreeSegmRay`, the main segmentation class
 - `src/utils/plot_cloud.py` — point cloud visualization helper used by the example
 - `src/final_files/config_RE.json` — optional JSON configuration for `TreeSegmRay`
-- `requirements.txt` — Python dependency list for the project
+- `raycloud_tools/` — nested BRIK fork with `rayextract` and its Python wrapper
+- `pyproject.toml` and `uv.lock` — dependency metadata and reproducible resolution
 
 ## Installation
 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/kalmary/Tree-Clustering.git
+git clone --recurse-submodules https://github.com/kalmary/Tree-Clustering.git
 cd Tree-Clustering
 ```
 
-2. Create and activate a virtual environment:
+For an existing checkout, initialize the nested fork explicitly:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+git submodule update --init --recursive
 ```
 
-3. Install Python dependencies:
+2. Create the Python 3.12 uv environment:
 
 ```bash
-pip install -r requirements.txt
+uv sync
+uv sync --group dev  # add standalone LAS/LAZ, visualization, and test tools
 ```
 
-4. If using the Docker backend, install Docker and pull the `raycloudtools` image:
+The default `basic` group provides array-based tree clustering. The `dev` group adds standalone LAS/LAZ processing, visualization, and test tools. TreeClustering no longer requires a PyTorch profile.
 
-```bash
-docker pull ghcr.io/csiro-robotics/raycloudtools:latest
-```
+3. Build and install `rayextract` from the checked-out
+   `raycloud_tools` fork so that it is available on `PATH`. The composed BRIK
+   Docker image performs this step automatically. The Python wrapper is
+   installed by `uv sync` from the nested local source.
 
-For more details, see the official raycloudtools repository:
-https://github.com/csiro-robotics/raycloudtools
+The fork and its focused wrapper documentation are in
+`raycloud_tools/README.md`. Tree-Clustering does not start or manage a separate
+Raycloudtools container.
 
 ## Usage
 
-The preferred usage is to import `TreeSegmRay` from `src.array_processing_RE` and call its `segment()` method.
+The preferred usage is to import `TreeSegmRay` from `src.array_processing_re` and call its `segment()` method.
 
 Example:
 
 ```python
-from src.array_processing_RE import TreeSegmRay
+from src.array_processing_re import TreeSegmRay
 import laspy
 import numpy as np
 
@@ -75,7 +78,9 @@ shrub instance IDs, with `-1` for unassigned points. `initial_species` contains
 Direct script execution is also supported:
 
 ```bash
-python src/array_processing_RE.py
+uv run --no-sync python src/array_processing_re.py --help
+uv run --no-sync python -m src.array_processing_re --help
+uv run --no-sync python src/array_processing_re.py --input-path input.laz --no-plot
 ```
 
 But the import-based approach is the recommended workflow.
