@@ -11,7 +11,7 @@ from typing import Any, cast
 import numpy as np
 import raycloud_tools
 from numpy.typing import NDArray
-from scipy.spatial import Delaunay, KDTree
+from scipy.spatial import ConvexHull, Delaunay, KDTree, QhullError
 from tqdm import tqdm
 
 if __package__:
@@ -184,7 +184,9 @@ class TreeSegmRay:
         records = struct.iter_unpack(fmt, raw)
         colors  = np.array([(r[ri], r[gi], r[bi]) for r in records], dtype=np.int32)
         packed  = colors[:, 0] << 16 | colors[:, 1] << 8 | colors[:, 2]
-        _, labels = np.unique(packed, return_inverse=True)
+        labels = np.full(len(packed), -1, dtype=np.int64)
+        assigned = packed != 0
+        _, labels[assigned] = np.unique(packed[assigned], return_inverse=True)
         return labels.astype(np.int64)
 
     # ------------------------------------------------------------------
@@ -201,6 +203,7 @@ class TreeSegmRay:
 
         ground_z_max  = ground_xyz[:, 2].max()
         unique_labels = np.unique(tree_labels)
+        unique_labels = unique_labels[unique_labels >= 0]
 
         grounded, floating = [], []
         for lbl in unique_labels:
@@ -771,6 +774,50 @@ class TreeSegmRay:
         )
         return tree_instance_labels, shrub_instance_labels
 
+    @staticmethod
+    def _filter_shrub_clusters(
+        xyz: np.ndarray,
+        cluster_ids: np.ndarray,
+        ground_xyz: np.ndarray | None,
+    ) -> np.ndarray:
+        retained = np.zeros(len(xyz), dtype=bool)
+        if len(xyz) == 0 or ground_xyz is None or len(ground_xyz) == 0:
+            return retained
+
+        ground_tree = KDTree(ground_xyz[:, :2])
+        for cluster_id in np.unique(cluster_ids):
+            mask = cluster_ids == cluster_id
+            points = xyz[mask]
+            lowest = points[np.argmin(points[:, 2])]
+            ground_indices = ground_tree.query_ball_point(lowest[:2], r=0.75, p=np.inf)
+            if not ground_indices:
+                continue
+            ground_height = float(ground_xyz[ground_indices, 2].mean())
+            section = points[
+                (points[:, 2] >= ground_height)
+                & (points[:, 2] <= ground_height + 0.4),
+                :2,
+            ]
+            if len(section) < 3:
+                continue
+            try:
+                section_width = ConvexHull(section).volume / np.pi
+            except QhullError:
+                continue
+            if section_width > 5.0:
+                continue
+            if abs(float(lowest[2]) - ground_height) > 0.4:
+                continue
+            try:
+                width = ConvexHull(points[:, :2]).volume / np.pi
+            except QhullError:
+                continue
+            height = float(np.ptp(points[:, 2]))
+            if width > 0 and 0.6 <= height / width <= 1.4:
+                retained[mask] = True
+
+        return retained
+
     def _segment_shrubs(
         self,
         tree_xyz: np.ndarray,
@@ -783,8 +830,8 @@ class TreeSegmRay:
         """Return shrub instance IDs for vegetation not assigned to a tree.
 
         ``tree_xyz`` and ``tree_ids`` contain only points selected by the
-        vegetation-class mask. Floating components and vertically elongated
-        clusters are rejected and remain at shrub ID ``-1``.
+        vegetation-class mask. Clusters rejected by ground-contact, width,
+        or shape filtering remain at shrub ID ``-1``.
         """
         if tree_xyz.shape[0] != tree_ids.shape[0]:
             raise ValueError(
@@ -805,22 +852,16 @@ class TreeSegmRay:
         if len(shrub_xyz) <= 1:
             return shrub_ids
 
-        if len(shrub_xyz) == 0:
-            return shrub_ids
-
-        retained_mask = self._filter_floating_clusters(
-            shrub_xyz,
-            ground_xyz=ground_xyz,
-            voxel_size=0.5,
-            max_gap=1.0,
-        )
-        shrub_point_indices = shrub_point_indices[retained_mask]
-        shrub_xyz = shrub_xyz[retained_mask]
-
         shrub_instance_ids = self._segment_xy_connected_components(
             shrub_xyz,
             voxel_size=xy_voxel_size,
         )
+        retained_mask = self._filter_shrub_clusters(
+            shrub_xyz, shrub_instance_ids, ground_xyz
+        )
+        shrub_point_indices = shrub_point_indices[retained_mask]
+        shrub_xyz = shrub_xyz[retained_mask]
+        shrub_instance_ids = shrub_instance_ids[retained_mask]
         retained_mask = self._remove_partial_trunks(
             shrub_xyz,
             shrub_instance_ids,
@@ -1174,6 +1215,89 @@ class TreeSegmRay:
         full_shrub_ids[tree_mask] = shrub_ids
 
         return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
+
+
+def test_filter_shrub_clusters_checks_ground_shape_and_base_width():
+    side = np.sqrt(np.pi)
+    xy = np.array([[0, 0], [side, 0], [side, side], [0, side]])
+    ground = np.array([[0, 0, 0], [0.75, 0.75, 0], [0.76, 0, 100]])
+    for height, accepted in [(0.59, False), (0.61, True), (1.0, True), (1.39, True), (1.41, False)]:
+        points = np.column_stack((np.tile(xy, (2, 1)), np.repeat([0, height], 4)))
+        labels = np.zeros(len(points), dtype=np.int32)
+        retained = TreeSegmRay._filter_shrub_clusters(points, labels, ground)
+        assert retained.tolist() == [accepted] * len(points)
+
+    points = np.column_stack((np.tile(xy, (2, 1)), np.repeat([0, 1], 4)))
+    labels = np.zeros(len(points), dtype=np.int32)
+    for missing_ground in (None, np.zeros((0, 3)), np.array([[100, 100, 0]])):
+        assert not TreeSegmRay._filter_shrub_clusters(points, labels, missing_ground).any()
+    wide = points.copy()
+    wide[:, :2] *= np.sqrt(6)
+    wide[:, 2] *= 6
+    assert not TreeSegmRay._filter_shrub_clusters(wide, labels, ground).any()
+    below_ground = points.copy()
+    below_ground[:, 2] -= 0.5
+    assert not TreeSegmRay._filter_shrub_clusters(below_ground, labels, ground).any()
+
+
+def test_filter_shrub_clusters_uses_zero_to_point_four_metre_section():
+    xy = np.array([[0, 0], [1, 0], [1, 1], [0, 1]]) * np.sqrt(np.pi)
+    ground = np.array([[0, 0, 20.0]])
+    for base_height, accepted in [(0.0, True), (0.2, True), (0.4, True), (0.41, False)]:
+        points = np.column_stack((np.tile(xy, (2, 1)), np.repeat([20 + base_height, 21 + base_height], 4)))
+        labels = np.zeros(len(points), dtype=np.int32)
+        retained = TreeSegmRay._filter_shrub_clusters(points, labels, ground)
+        assert retained.tolist() == [accepted] * len(points)
+    line = np.array([[0, 0, 20], [1, 0, 20], [2, 0, 20], [0, 0, 21]])
+    assert not TreeSegmRay._filter_shrub_clusters(line, np.zeros(4, dtype=np.int32), ground).any()
+
+
+def test_segment_shrubs_keeps_rejected_instances_and_species_unassigned():
+    segmenter = TreeSegmRay()
+    axis = np.linspace(0, np.sqrt(np.pi), 9)
+    x, y, z = np.meshgrid(axis, axis, [0.0, 0.2, 1.0], indexing="ij")
+    shrub = np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+    noise = shrub + [10, 0, 2]
+    tree = np.array([[20, 0, 0]])
+    xyz = np.concatenate((shrub, noise, tree))
+    tree_ids = np.full(len(xyz), -1, dtype=np.int32)
+    tree_ids[-1] = 0
+    ground = np.array([[0, 0, 0], [10, 0, 0]])
+
+    shrub_ids = segmenter._segment_shrubs(xyz, tree_ids, ground)
+    instance_ids, species = segmenter._merge_instance_ids(tree_ids, shrub_ids)
+
+    assert np.all(instance_ids[:len(shrub)] == 1)
+    assert np.all(species[:len(shrub)] == 17)
+    assert np.all(instance_ids[len(shrub):-1] == -1)
+    assert np.all(species[len(shrub):-1] == -1)
+    assert instance_ids[-1] == 0
+    assert species[-1] == -1
+
+
+def test_read_labels_preserves_black_points_as_noise(tmp_path):
+    path = tmp_path / "segmented.ply"
+    header = (
+        "ply\nformat binary_little_endian 1.0\nelement vertex 4\n"
+        "property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n"
+    )
+    path.write_bytes(header.encode("ascii") + bytes([0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 128, 0]))
+
+    labels = TreeSegmRay._read_labels_from_segmented_ply(str(path))
+
+    assert labels[[0, 2]].tolist() == [-1, -1]
+    assert set(labels[[1, 3]]) == {0, 1}
+
+
+def test_connect_floating_clusters_does_not_assign_noise_to_tree():
+    segmenter = TreeSegmRay()
+    labels = np.array([-1, -1, 0, 0], dtype=np.int32)
+    xyz = np.array([[0, 0, 5], [0, 0, 6], [0, 0, 0], [0, 0, 1]], dtype=np.float32)
+    ground = np.array([[0, 0, 0]], dtype=np.float32)
+
+    result = segmenter._connect_floating_clusters(labels, xyz, ground)
+
+    assert result.tolist() == [-1, -1, 0, 0]
 
 
 def test_merge_instance_ids_offsets_shrubs_after_max_tree_id():
