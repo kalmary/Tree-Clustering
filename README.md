@@ -25,7 +25,8 @@ For an existing checkout, initialize the nested fork explicitly:
 git submodule update --init --recursive
 ```
 
-2. Create the Python 3.12 uv environment:
+2. Install the native build prerequisites described in
+   `raycloud_tools/README.md`, then create the Python 3.12 uv environment:
 
 ```bash
 uv sync
@@ -34,10 +35,9 @@ uv sync --group dev  # add standalone LAS/LAZ, visualization, and test tools
 
 The default `basic` group provides array-based tree clustering. The `dev` group adds standalone LAS/LAZ processing, visualization, and test tools. TreeClustering no longer requires a PyTorch profile.
 
-3. Build and install `rayextract` from the checked-out
-   `raycloud_tools` fork so that it is available on `PATH`. The composed BRIK
-   Docker image performs this step automatically. The Python wrapper is
-   installed by `uv sync` from the nested local source.
+`uv sync` builds and installs the Python wrapper, `rayextract`, and `raylib`
+from the checked-out `raycloud_tools` fork. No separate native build or
+`PATH` configuration is needed.
 
 The fork and its focused wrapper documentation are in
 `raycloud_tools/README.md`. Tree-Clustering does not start or manage a separate

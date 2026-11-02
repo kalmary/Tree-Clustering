@@ -20,6 +20,12 @@ dev = [
     "pytest>=9,<10",
     "pyvista>=0.47,<1",
 ]
+test = [
+    "laspy>=2.7.0",
+    "laszip>=0.3.0",
+    "lazrs>=0.8.2",
+    "scikit-learn>=1.9.1",
+]
 [tool.uv]
 package = false
 default-groups = ["basic"]
