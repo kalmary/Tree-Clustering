@@ -694,11 +694,6 @@ class TreeSegmRay:
             tree_mask  = np.ones(len(xyz), dtype=bool)
 
         tree_rays = rays[tree_mask].copy() if rays is not None else None
-        print(
-            f"Fine clustering input: vegetation={len(tree_xyz):,}, "
-            f"ground={0 if ground_xyz is None else len(ground_xyz):,}, "
-            f"rays={tree_rays is not None}"
-        )
 
         if tree_xyz.shape[0] == 0:
             empty_ids = np.zeros(0, dtype=np.int32)
@@ -722,7 +717,6 @@ class TreeSegmRay:
         else:
             ground_xyz = self._estimate_ground(tree_xyz)
         if ground_xyz.shape[0] < 3:
-            print("Skipping rayextract: fewer than 3 ground points")
             tree_instance_labels = np.full(tree_xyz.shape[0], -1, dtype=np.int32)
             shrub_instance_labels = self._segment_shrubs(
                 tree_xyz, tree_instance_labels, ground_xyz=ground_xyz
@@ -761,18 +755,12 @@ class TreeSegmRay:
                 )
 
             tree_instance_labels = self._read_labels_from_segmented_ply(os.fspath(seg_ply))
-            ids, counts = np.unique(tree_instance_labels, return_counts=True)
-            print(f"Rayextract clusters: {dict(zip(ids.tolist(), counts.tolist()))}")
             tree_instance_labels = self._connect_floating_clusters(
                 tree_instance_labels, tree_xyz, ground_xyz,
                 ground_z_threshold=1.5,
                 min_cluster_size=500,
             )
-            ids, counts = np.unique(tree_instance_labels, return_counts=True)
-            print(f"After floating-cluster filtering: {dict(zip(ids.tolist(), counts.tolist()))}")
             tree_instance_labels = self._remove_small_clusters(tree_instance_labels, min_points=5000)
-            ids, counts = np.unique(tree_instance_labels, return_counts=True)
-            print(f"After minimum-size filtering: {dict(zip(ids.tolist(), counts.tolist()))}")
             tree_instance_labels = self._reduce_labels(tree_instance_labels)
 
         finally:
@@ -1021,14 +1009,12 @@ class TreeSegmRay:
             group_voxel_labels = labels[group_indices]
             group_voxel_rays = rays[group_indices] if rays is not None else None
             group_voxel_tree_mask = group_voxel_labels == self.tree_label
-            print(f"Fine clustering group {group_id}: vegetation={int(group_voxel_tree_mask.sum()):,}")
 
             try:
                 tree_ids_voxel, shrub_ids_voxel = self._segment_small(
                     group_voxel, group_voxel_labels, group_voxel_rays
                 )
-            except Exception as exc:  # noqa: BLE001
-                print(f"Fine clustering failed for group {group_id}: {type(exc).__name__}: {exc}")
+            except Exception:  # noqa: BLE001
                 max_tree_dim = 3.0
                 group_voxel_tree = group_voxel[group_voxel_tree_mask]
                 xy_extent = np.ptp(group_voxel_tree[:, :2], axis=0)
@@ -1066,8 +1052,6 @@ class TreeSegmRay:
                 group_tree_ids,
                 group_shrub_ids,
             )
-            ids, counts = np.unique(group_tree_ids, return_counts=True)
-            print(f"Group {group_id} after tree postprocessing: {dict(zip(ids.tolist(), counts.tolist()))}")
 
             valid = group_tree_ids >= 0
             if valid.any():
@@ -1221,10 +1205,6 @@ class TreeSegmRay:
                 scan_angle_deg=scan_angle_deg,
             )
 
-        values, counts = np.unique(labels, return_counts=True)
-        print(f"Input classifications: {dict(zip(values.tolist(), counts.tolist()))}")
-        print(f"Clustering rays available: {rays is not None}; native executable: {shutil.which('rayextract')}")
-
         xyz = (xyz - xyz.mean(axis=0)).astype(np.float32)
 
         if xyz[tree_mask].shape[0] > 1e7:  # threshold checked
@@ -1233,12 +1213,6 @@ class TreeSegmRay:
             tree_ids, shrub_ids = self._segment_small(xyz, labels, rays)
         full_tree_ids[tree_mask] = tree_ids
         full_shrub_ids[tree_mask] = shrub_ids
-        print(
-            f"Final instances: trees={len(np.unique(tree_ids[tree_ids >= 0]))}, "
-            f"shrubs={len(np.unique(shrub_ids[shrub_ids >= 0]))}; "
-            f"assigned points: trees={int((tree_ids >= 0).sum()):,}, "
-            f"shrubs={int((shrub_ids >= 0).sum()):,}"
-        )
 
         return self._merge_instance_ids(full_tree_ids, full_shrub_ids)
 
