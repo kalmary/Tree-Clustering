@@ -56,7 +56,6 @@ class TreeSegmRay:
         tree_label: int | None = None,
         verbose: bool = False,
         wood_distance: float = 0.02,
-        wood_propagation_enabled: bool = True,
         wood_propagation_height: float = 1.35,
         wood_propagation_radius: float = 0.1,
         wood_propagation_min_points: int = 3,
@@ -88,7 +87,6 @@ class TreeSegmRay:
         self.tree_label = tree_label
         self.ground_label = ground_label
         self.wood_distance = wood_distance
-        self.wood_propagation_enabled = wood_propagation_enabled
         self.wood_propagation_height = wood_propagation_height
         self.wood_propagation_radius = wood_propagation_radius
         self.wood_propagation_min_points = wood_propagation_min_points
@@ -438,16 +436,15 @@ class TreeSegmRay:
                 pth.Path(cloud_ply).with_name("cloud_trees.txt"),
                 self.wood_distance,
             )
-            if self.wood_propagation_enabled:
-                wood_leaf_labels = wood_leaf.propagate_wood(
-                    tree_xyz,
-                    tree_instance_labels,
-                    wood_leaf_labels,
-                    ground_xyz,
-                    height=self.wood_propagation_height,
-                    radius=self.wood_propagation_radius,
-                    min_points=self.wood_propagation_min_points,
-                )
+            wood_leaf_labels = wood_leaf.propagate_wood(
+                tree_xyz,
+                tree_instance_labels,
+                wood_leaf_labels,
+                ground_xyz,
+                height=self.wood_propagation_height,
+                radius=self.wood_propagation_radius,
+                min_points=self.wood_propagation_min_points,
+            )
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)

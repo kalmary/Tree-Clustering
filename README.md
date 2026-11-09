@@ -98,9 +98,9 @@ their nearest ground point in XY participate (default `1.35`). A leaf becomes
 wood when at least `wood_propagation_min_points` wood points (default `3`) are
 within a 3D distance of `wood_propagation_radius` metres (default `0.1`). Newly
 converted points participate in subsequent rounds until no more leaves qualify.
-Set `wood_propagation_enabled` to `false` to disable this step. All four parameters
-are available in the constructor and JSON configuration. Both the regular and
-Birch segmentation paths use `_segment_small`; inputs without usable tree
+Propagation always runs after the cylinder split. Its height, radius, and minimum
+point count are available in the constructor and JSON configuration. Both the
+regular and Birch segmentation paths use `_segment_small`; inputs without usable tree
 geometry return before propagation.
 
 The large-cloud path propagates extraction and geometry errors rather than

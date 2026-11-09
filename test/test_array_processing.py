@@ -21,12 +21,10 @@ def test_wood_propagation_configuration_and_validation():
     import pytest
 
     segmenter = TreeSegmRay.from_config(cfg_path=pth.Path(__file__).parents[1] / "src/final_files/config_RE.json")
-    assert segmenter.wood_propagation_enabled is True
     assert segmenter.wood_propagation_height == 1.35
     assert segmenter.wood_propagation_radius == 0.1
     assert segmenter.wood_propagation_min_points == 3
     config = {
-        "wood_propagation_enabled": False,
         "wood_propagation_height": 1.0,
         "wood_propagation_radius": 0.2,
         "wood_propagation_min_points": 5,

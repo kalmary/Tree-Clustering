@@ -38,24 +38,22 @@ def test_segment_returns_wood_leaf_labels_from_native_tree_geometry():
 
 
 @pytest.mark.parametrize(
-    "enabled,height,radius,min_points,promoted",
+    "height,radius,min_points,promoted",
     [
-        (True, 0.6, 0.1, 3, True),
-        (False, 0.6, 0.1, 3, False),
-        (True, 0.4, 0.1, 3, False),
-        (True, 0.6, 0.05, 3, False),
-        (True, 0.6, 0.1, 4, False),
+        (0.6, 0.1, 3, True),
+        (0.4, 0.1, 3, False),
+        (0.6, 0.05, 3, False),
+        (0.6, 0.1, 4, False),
     ],
 )
 def test_segment_small_applies_configured_wood_propagation(
-    enabled, height, radius, min_points, promoted, monkeypatch,
+    height, radius, min_points, promoted, monkeypatch,
 ):
     from pathlib import Path
 
     segmenter = TreeSegmRay.from_config(cfg={
         "tree_label": 7,
         "ground_label": 1,
-        "wood_propagation_enabled": enabled,
         "wood_propagation_height": height,
         "wood_propagation_radius": radius,
         "wood_propagation_min_points": min_points,
