@@ -5,6 +5,11 @@ This repository provides tree instance segmentation for LiDAR point cloud data.
 ## Repository structure
 
 - `src/array_processing_re.py` — defines `TreeSegmRay`, the main segmentation class
+- `src/utils/cloud_geometry.py` — connectivity, ground estimation, voxel sampling, and trunk geometry
+- `src/utils/cluster_processing.py` — cluster filtering, label reduction, and instance ID merging
+- `src/utils/raycloud_io.py` — Raycloudtools PLY input and output helpers
+- `src/utils/wood_leaf.py` — wood/leaf classification from reconstructed branch cylinders
+- `test/` — unit and integration tests
 - `src/utils/plot_cloud.py` — point cloud visualization helper used by the example
 - `src/final_files/config_RE.json` — optional JSON configuration for `TreeSegmRay`
 - `raycloud_tools/` — nested BRIK fork with `rayextract` and its Python wrapper
@@ -68,12 +73,29 @@ seg = TreeSegmRay(ground_label=1, tree_label=7, verbose=True)
 # seg = TreeSegmRay.from_config(cfg_path="src/final_files/config_RE.json", verbose=True)
 
 # run segmentation
-instance_labels, initial_species = seg.segment(xyz, labels)
+instance_labels, initial_species, wood_leaf_labels = seg.segment(xyz, labels)
 ```
 
-`segment()` returns two point-aligned arrays. `instance_labels` contains tree and
+`segment()` returns three point-aligned arrays. `instance_labels` contains tree and
 shrub instance IDs, with `-1` for unassigned points. `initial_species` contains
 `17` for shrubs and `-1` for tree instances that still require classification.
+`wood_leaf_labels` is an `int8` array containing `0` for wood, `1` for leaves,
+and `-1` for non-tree points, including shrubs and unassigned points. Existing
+callers must unpack all three arrays.
+
+Wood/leaf labels use the branch cylinders already reconstructed by Raycloudtools:
+points inside the cylinders are wood and remaining tree points are leaves.
+`wood_distance` expands each cylinder's radius and both ends, in metres (default
+`0.02`). It can be set in the constructor or JSON configuration. This is a
+geometric estimate: sparse scans, missing small branches, and branch radius
+estimation can affect accuracy. Increasing the tolerance cannot recover missing
+branches and can classify nearby foliage as wood. `segment_branches` only changes
+the instance granularity; wood/leaf labels are returned in either mode.
+
+The large-cloud path propagates extraction and geometry errors rather than
+returning fallback tree IDs without valid wood/leaf labels. The standalone LAZ
+command continues to save instance IDs; wood/leaf labels are available through
+the Python return value.
 
 Direct script execution is also supported:
 
@@ -81,6 +103,11 @@ Direct script execution is also supported:
 uv run --no-sync python src/array_processing_re.py --help
 uv run --no-sync python -m src.array_processing_re --help
 uv run --no-sync python src/array_processing_re.py --input-path input.laz --no-plot
+uv run --no-sync python src/array_processing_re.py --input-path input.laz --plot
 ```
+
+With `--plot`, each tree is shown separately, coloured by wood/leaf label
+(`0`: wood, `1`: leaf). Close each window to view the next tree. Shrubs and
+unassigned points are excluded. Plotting requires the `dev` dependency group.
 
 But the import-based approach is the recommended workflow.

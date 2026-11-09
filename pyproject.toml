@@ -34,4 +34,6 @@ default-groups = ["basic"]
 raycloud-tools = { path = "raycloud_tools" }
 
 [tool.pytest.ini_options]
-python_files = ["test_*.py", "array_processing_re.py"]
+testpaths = ["test"]
+pythonpath = ["."]
+python_files = ["test_*.py"]

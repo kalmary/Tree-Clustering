@@ -173,6 +173,7 @@ cython_debug/
 *.laz
 **/train/
 **/test/
+!/test/
 **/val/
 
 *.xlsx#
