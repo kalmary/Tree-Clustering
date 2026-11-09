@@ -17,10 +17,12 @@ def test_wood_distance_validation_and_configuration():
             TreeSegmRay(wood_distance=distance)
 
 
-def test_wood_propagation_configuration_and_validation():
+def test_wood_propagation_configuration_and_validation(tmp_path):
+    import json
+
     import pytest
 
-    segmenter = TreeSegmRay.from_config(cfg_path=pth.Path(__file__).parents[1] / "src/final_files/config_RE.json")
+    segmenter = TreeSegmRay()
     assert segmenter.wood_propagation_height == 1.35
     assert segmenter.wood_propagation_radius == 0.3
     assert segmenter.wood_propagation_vertical_radius == 0.6
@@ -31,9 +33,14 @@ def test_wood_propagation_configuration_and_validation():
         "wood_propagation_vertical_radius": 0.8,
         "wood_propagation_min_points": 5,
     }
-    segmenter = TreeSegmRay.from_config(cfg=config)
-    for name, value in config.items():
-        assert getattr(segmenter, name) == value
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    for segmenter in [
+        TreeSegmRay.from_config(cfg=config),
+        TreeSegmRay.from_config(cfg_path=config_path),
+    ]:
+        for name, value in config.items():
+            assert getattr(segmenter, name) == value
     invalid = {
         "wood_propagation_height": [-0.01, np.nan, np.inf],
         "wood_propagation_radius": [0, -0.1, np.nan, np.inf],
