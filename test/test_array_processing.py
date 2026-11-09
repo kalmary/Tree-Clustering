@@ -17,6 +17,34 @@ def test_wood_distance_validation_and_configuration():
             TreeSegmRay(wood_distance=distance)
 
 
+def test_wood_propagation_configuration_and_validation():
+    import pytest
+
+    segmenter = TreeSegmRay.from_config(cfg_path=pth.Path(__file__).parents[1] / "src/final_files/config_RE.json")
+    assert segmenter.wood_propagation_enabled is True
+    assert segmenter.wood_propagation_height == 1.35
+    assert segmenter.wood_propagation_radius == 0.1
+    assert segmenter.wood_propagation_min_points == 3
+    config = {
+        "wood_propagation_enabled": False,
+        "wood_propagation_height": 1.0,
+        "wood_propagation_radius": 0.2,
+        "wood_propagation_min_points": 5,
+    }
+    segmenter = TreeSegmRay.from_config(cfg=config)
+    for name, value in config.items():
+        assert getattr(segmenter, name) == value
+    invalid = {
+        "wood_propagation_height": [-0.01, np.nan, np.inf],
+        "wood_propagation_radius": [0, -0.1, np.nan, np.inf],
+        "wood_propagation_min_points": [0, -1, 1.5, True],
+    }
+    for name, values in invalid.items():
+        for value in values:
+            with pytest.raises(ValueError, match=name):
+                TreeSegmRay(**{name: value})
+
+
 def test_segment_preserves_instances_species_and_non_tree_labels():
     segmenter = TreeSegmRay(tree_label=7)
     segmenter._segment_small = lambda *args: (
@@ -238,7 +266,7 @@ def test_segment_derives_rays_from_supported_array_layouts():
 
 
 def test_segment_small_enables_rayextract_rays_only_with_real_data(monkeypatch):
-    segmenter = TreeSegmRay.__new__(TreeSegmRay)
+    segmenter = TreeSegmRay()
     segmenter.tree_label = 7
     segmenter.ground_label = 1
     segmenter.verbose = False

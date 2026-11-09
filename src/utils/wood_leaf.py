@@ -77,3 +77,38 @@ def segment_wood_leaf(
                 f"No branch geometry for assigned tree points in {tree_path}"
             )
     return labels
+
+
+def propagate_wood(
+    xyz: NDArray,
+    tree_ids: NDArray,
+    labels: NDArray[np.int8],
+    ground_xyz: NDArray,
+    height: float,
+    radius: float,
+    min_points: int,
+) -> NDArray[np.int8]:
+    """Grow wood labels within each tree's lower band until no leaves qualify."""
+    result = labels.copy()
+    indices = np.flatnonzero((tree_ids >= 0) & (labels >= 0))
+    if len(indices) == 0:
+        return result
+    if len(ground_xyz) == 0:
+        raise ValueError("Wood propagation requires ground points")
+
+    _, nearest = KDTree(ground_xyz[:, :2]).query(xyz[indices, :2])
+    heights = xyz[indices, 2] - ground_xyz[nearest, 2]
+    indices = indices[heights <= height]
+    for tree_id in np.unique(tree_ids[indices]):
+        tree_indices = indices[tree_ids[indices] == tree_id]
+        wood = tree_indices[result[tree_indices] == 0]
+        leaves = tree_indices[result[tree_indices] == 1]
+        while len(wood) >= min_points and len(leaves) > 0:
+            distances, _ = KDTree(xyz[wood]).query(xyz[leaves], k=[min_points])
+            promote = distances[:, 0] <= radius
+            if not promote.any():
+                break
+            result[leaves[promote]] = 0
+            wood = np.concatenate((wood, leaves[promote]))
+            leaves = leaves[~promote]
+    return result

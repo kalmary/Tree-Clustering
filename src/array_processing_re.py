@@ -56,9 +56,23 @@ class TreeSegmRay:
         tree_label: int | None = None,
         verbose: bool = False,
         wood_distance: float = 0.02,
+        wood_propagation_enabled: bool = True,
+        wood_propagation_height: float = 1.35,
+        wood_propagation_radius: float = 0.1,
+        wood_propagation_min_points: int = 3,
     ):
         if not np.isfinite(wood_distance) or wood_distance < 0:
             raise ValueError("wood_distance must be finite and non-negative")
+        if not np.isfinite(wood_propagation_height) or wood_propagation_height < 0:
+            raise ValueError("wood_propagation_height must be finite and non-negative")
+        if not np.isfinite(wood_propagation_radius) or wood_propagation_radius <= 0:
+            raise ValueError("wood_propagation_radius must be finite and positive")
+        if (
+            isinstance(wood_propagation_min_points, (bool, np.bool_))
+            or not isinstance(wood_propagation_min_points, (int, np.integer))
+            or wood_propagation_min_points < 1
+        ):
+            raise ValueError("wood_propagation_min_points must be a positive integer")
         self.verbose = verbose
         self.height_min = height_min
         self.max_diameter = max_diameter
@@ -74,6 +88,10 @@ class TreeSegmRay:
         self.tree_label = tree_label
         self.ground_label = ground_label
         self.wood_distance = wood_distance
+        self.wood_propagation_enabled = wood_propagation_enabled
+        self.wood_propagation_height = wood_propagation_height
+        self.wood_propagation_radius = wood_propagation_radius
+        self.wood_propagation_min_points = wood_propagation_min_points
 
     @classmethod
     def from_config(
@@ -420,6 +438,16 @@ class TreeSegmRay:
                 pth.Path(cloud_ply).with_name("cloud_trees.txt"),
                 self.wood_distance,
             )
+            if self.wood_propagation_enabled:
+                wood_leaf_labels = wood_leaf.propagate_wood(
+                    tree_xyz,
+                    tree_instance_labels,
+                    wood_leaf_labels,
+                    ground_xyz,
+                    height=self.wood_propagation_height,
+                    radius=self.wood_propagation_radius,
+                    min_points=self.wood_propagation_min_points,
+                )
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)

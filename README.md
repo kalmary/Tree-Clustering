@@ -92,6 +92,17 @@ estimation can affect accuracy. Increasing the tolerance cannot recover missing
 branches and can classify nearby foliage as wood. `segment_branches` only changes
 the instance granularity; wood/leaf labels are returned in either mode.
 
+After the cylinder split, `_segment_small` propagates wood labels independently
+within each tree. Only points at or below `wood_propagation_height` metres above
+their nearest ground point in XY participate (default `1.35`). A leaf becomes
+wood when at least `wood_propagation_min_points` wood points (default `3`) are
+within a 3D distance of `wood_propagation_radius` metres (default `0.1`). Newly
+converted points participate in subsequent rounds until no more leaves qualify.
+Set `wood_propagation_enabled` to `false` to disable this step. All four parameters
+are available in the constructor and JSON configuration. Both the regular and
+Birch segmentation paths use `_segment_small`; inputs without usable tree
+geometry return before propagation.
+
 The large-cloud path propagates extraction and geometry errors rather than
 returning fallback tree IDs without valid wood/leaf labels. The standalone LAZ
 command continues to save instance IDs; wood/leaf labels are available through

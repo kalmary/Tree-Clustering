@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.utils.wood_leaf import segment_wood_leaf
+from src.utils.wood_leaf import propagate_wood, segment_wood_leaf
 
 
 def test_segment_wood_leaf_preserves_order_and_applies_cylinder_tolerance(tmp_path):
@@ -80,3 +80,75 @@ def test_segment_wood_leaf_skips_geometry_for_non_tree_points(tmp_path):
         distance=0.02,
     )
     assert result.tolist() == [-1, -1, -1]
+
+
+def test_propagate_wood_respects_neighbour_count_and_radius():
+    xyz = np.array([[0, 0, 0.5], [0, 0.01, 0.5], [0, -0.01, 0.5], [0.08, 0, 0.5], [0.5, 0, 0.5]])
+    labels = np.array([0, 0, 0, 1, 1], dtype=np.int8)
+    tree_ids = np.zeros(len(xyz), dtype=np.int32)
+    ground = np.array([[0, 0, 0]])
+
+    result = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 3)
+    insufficient = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 4)
+    too_far = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.05, 3)
+
+    assert result.tolist() == [0, 0, 0, 0, 1]
+    np.testing.assert_array_equal(insufficient, labels)
+    np.testing.assert_array_equal(too_far, labels)
+    assert labels.tolist() == [0, 0, 0, 1, 1]
+    assert result.dtype == np.int8
+
+
+def test_propagate_wood_repeats_until_stable_without_point_order_dependence():
+    xyz = np.array([[x, y, 0.5] for x in [0, 0.08, 0.16, 0.4] for y in [-0.01, 0, 0.01]])
+    tree_ids = np.zeros(len(xyz), dtype=np.int32)
+    labels = np.array([0] * 3 + [1] * 9, dtype=np.int8)
+    ground = np.array([[0, 0, 0]])
+
+    result = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 3)
+    reverse = propagate_wood(xyz[::-1], tree_ids[::-1], labels[::-1], ground, 1.35, 0.1, 3)
+
+    assert result.tolist() == [0] * 9 + [1] * 3
+    np.testing.assert_array_equal(reverse[::-1], result)
+
+
+def test_propagate_wood_uses_local_ground_and_limits_seeds_and_candidates():
+    xyz = np.array([
+        [0, 0, 101.34], [-0.01, 0, 101.34], [0.01, 0, 101.34],
+        [0, 0, 101.35], [0, 0, 101.36],
+        [10, 0, 111.34], [9.99, 0, 111.34], [10.01, 0, 111.34], [10, 0, 111.35],
+        [20, 0, 1.36], [19.99, 0, 1.36], [20.01, 0, 1.36], [20, 0, 1.35],
+    ])
+    tree_ids = np.array([0] * 5 + [1] * 4 + [2] * 4, dtype=np.int32)
+    labels = np.array([0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=np.int8)
+    ground = np.array([[0, 0, 100], [10, 0, 110], [20, 0, 0]])
+
+    result = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 3)
+    translated = propagate_wood(xyz + [1000, 2000, 50], tree_ids, labels, ground + [1000, 2000, 50], 1.35, 0.1, 3)
+
+    assert result.tolist() == [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]
+    np.testing.assert_array_equal(translated, result)
+
+
+def test_propagate_wood_does_not_cross_tree_boundaries_or_change_non_tree_points():
+    xyz = np.array([[0, 0, 0.5]] * 7)
+    tree_ids = np.array([0, 0, 0, 1, 0, -1, 2], dtype=np.int32)
+    labels = np.array([0, 0, 0, 1, 1, -1, -1], dtype=np.int8)
+
+    result = propagate_wood(xyz, tree_ids, labels, np.array([[0, 0, 0]]), 1.35, 0.1, 3)
+
+    assert result.tolist() == [0, 0, 0, 1, 0, -1, -1]
+
+
+def test_propagate_wood_includes_radius_boundary_and_handles_no_candidates():
+    xyz = np.array([[0, 0, 0.5]] * 3 + [[0.1, 0, 0.5]])
+    tree_ids = np.zeros(4, dtype=np.int32)
+    ground = np.array([[0, 0, 0]])
+    labels = np.array([0, 0, 0, 1], dtype=np.int8)
+    result = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 3)
+    assert result.tolist() == [0, 0, 0, 0]
+    for labels in [np.ones(4, dtype=np.int8), np.zeros(4, dtype=np.int8), np.full(4, -1, dtype=np.int8)]:
+        np.testing.assert_array_equal(propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 3), labels)
+    empty = propagate_wood(np.empty((0, 3)), np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int8), np.empty((0, 3)), 1.35, 0.1, 3)
+    assert empty.shape == (0,)
+    assert empty.dtype == np.int8
