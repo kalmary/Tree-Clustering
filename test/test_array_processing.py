@@ -269,7 +269,6 @@ def test_segment_small_enables_rayextract_rays_only_with_real_data(monkeypatch):
     segmenter.ground_label = 1
     segmenter.verbose = False
     segmenter.use_rays = True
-    segmenter.segment_branches = False
     segmenter.height_min = 2.0
     segmenter.max_diameter = 0.9
     segmenter.crop_length = 1.0
@@ -349,6 +348,7 @@ def test_segment_small_enables_rayextract_rays_only_with_real_data(monkeypatch):
 
     assert not calls[0]["use_rays"]
     assert calls[1]["use_rays"]
+    assert all(call["segment_branches"] is False for call in calls)
     assert not pth.Path(calls[0]["workdir"]).exists()
     assert not pth.Path(calls[1]["workdir"]).exists()
 

@@ -9,7 +9,6 @@
     "global_taper_factor": null,
     "grid_width":          null,
     "use_rays":            true,
-    "segment_branches":    false,
     "wood_distance":       0.02,
     "wood_propagation_height": 1.35,
     "wood_propagation_radius": 0.1,

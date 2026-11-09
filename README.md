@@ -89,8 +89,8 @@ points inside the cylinders are wood and remaining tree points are leaves.
 `0.02`). It can be set in the constructor or JSON configuration. This is a
 geometric estimate: sparse scans, missing small branches, and branch radius
 estimation can affect accuracy. Increasing the tolerance cannot recover missing
-branches and can classify nearby foliage as wood. `segment_branches` only changes
-the instance granularity; wood/leaf labels are returned in either mode.
+branches and can classify nearby foliage as wood. Raycloudtools always assigns
+one instance ID per tree; branch-level instance segmentation is disabled.
 
 After the cylinder split, `_segment_small` propagates wood labels independently
 within each tree. Only points at or below `wood_propagation_height` metres above

@@ -33,7 +33,6 @@ else:
 #     global_taper_factor: Optional[float] = None
 #     grid_width:          Optional[float] = None
 #     use_rays:            bool          = False
-#     segment_branches:    bool          = False
 #     ground_label:        Optional[int] = None
 #     tree_label:          Optional[int] = None
 
@@ -51,7 +50,6 @@ class TreeSegmRay:
         global_taper_factor: float | None = None,
         grid_width: float | None = None,
         use_rays: bool = False,
-        segment_branches: bool = False,
         ground_label: int | None = None,
         tree_label: int | None = None,
         verbose: bool = False,
@@ -83,7 +81,6 @@ class TreeSegmRay:
         self.global_taper_factor = global_taper_factor
         self.grid_width = grid_width
         self.use_rays = use_rays
-        self.segment_branches = segment_branches
         self.tree_label = tree_label
         self.ground_label = ground_label
         self.wood_distance = wood_distance
@@ -407,7 +404,7 @@ class TreeSegmRay:
                 global_taper_factor=self.global_taper_factor,
                 grid_width=self.grid_width,
                 use_rays=tree_rays is not None,
-                segment_branches=self.segment_branches,
+                segment_branches=False,
                 workdir=tmpdir,
             )
             if not seg_ply.exists():
