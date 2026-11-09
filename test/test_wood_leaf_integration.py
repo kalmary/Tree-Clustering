@@ -38,16 +38,18 @@ def test_segment_returns_wood_leaf_labels_from_native_tree_geometry():
 
 
 @pytest.mark.parametrize(
-    "height,radius,min_points,promoted",
+    "height,radius,min_points,vertical_radius,leaf_height,promoted",
     [
-        (0.6, 0.1, 3, True),
-        (0.4, 0.1, 3, False),
-        (0.6, 0.05, 3, False),
-        (0.6, 0.1, 4, False),
+        (0.6, 0.1, 3, 0.1, 0.5, True),
+        (0.4, 0.1, 3, 0.1, 0.5, False),
+        (0.6, 0.05, 3, 0.1, 0.5, False),
+        (0.6, 0.1, 4, 0.1, 0.5, False),
+        (1.35, 0.1, 3, 0.2, 0.8, False),
+        (1.35, 0.1, 3, 0.6, 0.8, True),
     ],
 )
 def test_segment_small_applies_configured_wood_propagation(
-    height, radius, min_points, promoted, monkeypatch,
+    height, radius, min_points, vertical_radius, leaf_height, promoted, monkeypatch,
 ):
     from pathlib import Path
 
@@ -57,6 +59,7 @@ def test_segment_small_applies_configured_wood_propagation(
         "wood_propagation_height": height,
         "wood_propagation_radius": radius,
         "wood_propagation_min_points": min_points,
+        "wood_propagation_vertical_radius": vertical_radius,
     })
     initial_labels = np.array([0, 0, 0, 1, 1], dtype=np.int8)
     monkeypatch.setattr(segmenter, "_segment_wood_leaf", lambda *args: initial_labels.copy())
@@ -73,7 +76,7 @@ def test_segment_small_applies_configured_wood_propagation(
     monkeypatch.setattr(raycloud_tools, "run_trees", run_trees)
     xyz = np.array([
         [0, 0, 0.5], [0, 0.01, 0.5], [0, -0.01, 0.5],
-        [0.08, 0, 0.5], [0.5, 0, 0.5],
+        [0.08, 0, leaf_height], [0.5, 0, 0.5],
         [0, 0, 0], [1, 0, 0], [0, 1, 0],
     ])
 

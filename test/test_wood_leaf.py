@@ -112,6 +112,30 @@ def test_propagate_wood_repeats_until_stable_without_point_order_dependence():
     np.testing.assert_array_equal(reverse[::-1], result)
 
 
+def test_propagate_wood_uses_ellipsoid_with_longer_vertical_reach():
+    xyz = np.array([
+        [0, 0, 0], [0, 0, 0.001], [0, 0, 0.002],
+        [0, 0, 0.55], [0, 0, 0.6], [0, 0, 0.7],
+        [0.31, 0, 0.001], [0.24, 0, 0.482],
+    ])
+    tree_ids = np.zeros(len(xyz), dtype=np.int32)
+    labels = np.array([0, 0, 0, 1, 1, 1, 1, 1], dtype=np.int8)
+    ground = np.array([[0, 0, 0]])
+
+    spherical = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.3, 3)
+    result = propagate_wood(
+        xyz, tree_ids, labels, ground, 1.35, 0.3, 3, vertical_radius=0.6,
+    )
+    shifted = propagate_wood(
+        xyz + [1000, 2000, 50], tree_ids, labels, ground + [1000, 2000, 50],
+        1.35, 0.3, 3, vertical_radius=0.6,
+    )
+
+    np.testing.assert_array_equal(spherical, labels)
+    assert result.tolist() == [0, 0, 0, 0, 0, 1, 1, 1]
+    np.testing.assert_array_equal(shifted, result)
+
+
 def test_propagate_wood_uses_local_ground_and_limits_seeds_and_candidates():
     xyz = np.array([
         [0, 0, 101.34], [-0.01, 0, 101.34], [0.01, 0, 101.34],
@@ -123,8 +147,8 @@ def test_propagate_wood_uses_local_ground_and_limits_seeds_and_candidates():
     labels = np.array([0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=np.int8)
     ground = np.array([[0, 0, 100], [10, 0, 110], [20, 0, 0]])
 
-    result = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 3)
-    translated = propagate_wood(xyz + [1000, 2000, 50], tree_ids, labels, ground + [1000, 2000, 50], 1.35, 0.1, 3)
+    result = propagate_wood(xyz, tree_ids, labels, ground, 1.35, 0.1, 3, vertical_radius=0.6)
+    translated = propagate_wood(xyz + [1000, 2000, 50], tree_ids, labels, ground + [1000, 2000, 50], 1.35, 0.1, 3, vertical_radius=0.6)
 
     assert result.tolist() == [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]
     np.testing.assert_array_equal(translated, result)

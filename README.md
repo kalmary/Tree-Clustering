@@ -96,9 +96,12 @@ After the cylinder split, `_segment_small` propagates wood labels independently
 within each tree. Only points at or below `wood_propagation_height` metres above
 their nearest ground point in XY participate (default `1.35`). A leaf becomes
 wood when at least `wood_propagation_min_points` wood points (default `3`) are
-within a 3D distance of `wood_propagation_radius` metres (default `0.1`). Newly
+inside an ellipsoid with horizontal XY radius `wood_propagation_radius` (default
+`0.3` m) and vertical radius `wood_propagation_vertical_radius` (default `0.6` m).
+Neighbours satisfy `(dx² + dy²) / r_xy² + dz² / r_z² <= 1`. Both radii are
+semi-axes, so the default ellipsoid is `0.6` m wide and `1.2` m tall. Newly
 converted points participate in subsequent rounds until no more leaves qualify.
-Propagation always runs after the cylinder split. Its height, radius, and minimum
+Propagation always runs after the cylinder split. Its height, both radii, and minimum
 point count are available in the constructor and JSON configuration. Both the
 regular and Birch segmentation paths use `_segment_small`; inputs without usable tree
 geometry return before propagation.

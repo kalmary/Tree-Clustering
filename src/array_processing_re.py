@@ -55,8 +55,9 @@ class TreeSegmRay:
         verbose: bool = False,
         wood_distance: float = 0.02,
         wood_propagation_height: float = 1.35,
-        wood_propagation_radius: float = 0.1,
+        wood_propagation_radius: float = 0.3,
         wood_propagation_min_points: int = 3,
+        wood_propagation_vertical_radius: float = 0.6,
     ):
         if not np.isfinite(wood_distance) or wood_distance < 0:
             raise ValueError("wood_distance must be finite and non-negative")
@@ -64,6 +65,11 @@ class TreeSegmRay:
             raise ValueError("wood_propagation_height must be finite and non-negative")
         if not np.isfinite(wood_propagation_radius) or wood_propagation_radius <= 0:
             raise ValueError("wood_propagation_radius must be finite and positive")
+        if (
+            not np.isfinite(wood_propagation_vertical_radius)
+            or wood_propagation_vertical_radius <= 0
+        ):
+            raise ValueError("wood_propagation_vertical_radius must be finite and positive")
         if (
             isinstance(wood_propagation_min_points, (bool, np.bool_))
             or not isinstance(wood_propagation_min_points, (int, np.integer))
@@ -87,6 +93,7 @@ class TreeSegmRay:
         self.wood_propagation_height = wood_propagation_height
         self.wood_propagation_radius = wood_propagation_radius
         self.wood_propagation_min_points = wood_propagation_min_points
+        self.wood_propagation_vertical_radius = wood_propagation_vertical_radius
 
     @classmethod
     def from_config(
@@ -441,6 +448,7 @@ class TreeSegmRay:
                 height=self.wood_propagation_height,
                 radius=self.wood_propagation_radius,
                 min_points=self.wood_propagation_min_points,
+                vertical_radius=self.wood_propagation_vertical_radius,
             )
 
         finally:

@@ -87,8 +87,10 @@ def propagate_wood(
     height: float,
     radius: float,
     min_points: int,
+    *,
+    vertical_radius: float | None = None,
 ) -> NDArray[np.int8]:
-    """Grow wood labels within each tree's lower band until no leaves qualify."""
+    """Grow wood labels using ellipsoidal neighbourhoods within each tree's lower band."""
     result = labels.copy()
     indices = np.flatnonzero((tree_ids >= 0) & (labels >= 0))
     if len(indices) == 0:
@@ -99,16 +101,19 @@ def propagate_wood(
     _, nearest = KDTree(ground_xyz[:, :2]).query(xyz[indices, :2])
     heights = xyz[indices, 2] - ground_xyz[nearest, 2]
     indices = indices[heights <= height]
+    scale = np.array([radius, radius, radius if vertical_radius is None else vertical_radius])
     for tree_id in np.unique(tree_ids[indices]):
         tree_indices = indices[tree_ids[indices] == tree_id]
-        wood = tree_indices[result[tree_indices] == 0]
-        leaves = tree_indices[result[tree_indices] == 1]
+        points = xyz[tree_indices].astype(np.float64)
+        points = (points - points[0]) / scale
+        wood = np.flatnonzero(result[tree_indices] == 0)
+        leaves = np.flatnonzero(result[tree_indices] == 1)
         while len(wood) >= min_points and len(leaves) > 0:
-            distances, _ = KDTree(xyz[wood]).query(xyz[leaves], k=[min_points])
-            promote = distances[:, 0] <= radius
+            distances, _ = KDTree(points[wood]).query(points[leaves], k=[min_points])
+            promote = distances[:, 0] <= 1.0
             if not promote.any():
                 break
-            result[leaves[promote]] = 0
+            result[tree_indices[leaves[promote]]] = 0
             wood = np.concatenate((wood, leaves[promote]))
             leaves = leaves[~promote]
     return result
